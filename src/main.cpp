@@ -7,6 +7,9 @@
 #include <cstdlib>
 #include <set>
 #include <cstdio>
+#include <fstream>
+#include <sstream>
+#include <iostream>
 
 int main() {
     initscr();
@@ -14,6 +17,21 @@ int main() {
     cbreak();
     keypad(stdscr, TRUE);
     curs_set(0);
+
+    int bar_bg = COLOR_YELLOW;
+    int bar_fg = COLOR_BLACK;
+    
+    if (has_colors()) {
+        start_color();
+        use_default_colors();
+        // Texto blanco sobre fondo terminal
+        init_pair(1, COLOR_WHITE, -1);
+        // Texto blanco sobre fondo cyan
+        init_pair(2, bar_fg, bar_bg);
+    }
+    
+    endwin();
+    refresh();
 
     bool running = true;
     int input;
@@ -55,6 +73,7 @@ int main() {
 
         switch (input) {
             case 'q':
+            case 'Q':
                 running = false;
                 break;
             case KEY_UP:
@@ -101,6 +120,18 @@ int main() {
             break;
             case 8: // Ctrl+H
                 show_help = !show_help;
+                break;
+            case 'b': // Cambiar color de barra
+                if (has_colors()) {
+                    auto [fg, bg] = bar_color_selection_popup();
+                    if (fg >= 0 && bg >= 0) {
+                        bar_fg = fg;
+                        bar_bg = bg;
+                        init_pair(2, bar_fg, bar_bg);
+                    }
+                } else {
+                    confirm_popup("Colores no soportados en esta terminal.");
+                }
                 break;
         }
 
