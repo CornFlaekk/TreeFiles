@@ -6,6 +6,7 @@
 #include <string>
 #include <cstdlib>
 #include <set>
+#include <cstdio>
 
 int main() {
     initscr();
@@ -21,6 +22,7 @@ int main() {
     int rows, cols;
     getmaxyx(stdscr, rows, cols);
     int visible_rows = rows - 2; // 1 para borde superior, 1 para borde inferior
+    bool show_help = true;
 
     std::filesystem::path current_path = ".";
     auto& expanded_dirs = get_expanded_dirs();
@@ -29,6 +31,10 @@ int main() {
         clear();
 
         draw_terminal_border();
+
+        getmaxyx(stdscr, rows, cols);
+
+        visible_rows = rows - (show_help ? 6 : 3); // Ajusta para no tapar la ayuda
 
         std::vector<EntryInfo> entries;
         build_tree_entries(current_path, expanded_dirs, entries, 0);
@@ -42,6 +48,8 @@ int main() {
         mvprintw(0, 2, "Flechas: mover | E: expandir/colapsar | Espacio: abrir | q: salir");
 
         refresh();
+
+        draw_help_box(rows, cols, show_help);
 
         input = getch();
 
@@ -72,6 +80,27 @@ int main() {
                         expanded_dirs.insert(dir_path);
                     }
                 }
+                break;
+            case KEY_DC: // SUPR
+            if (!entries.empty()) {
+                const auto& entry = entries[selected];
+                std::string msg = "Delete \"" + entry.name + "\"?";
+                if (confirm_popup(msg)) {
+                    try {
+                        if (entry.type == "[DIR] ") {
+                            std::filesystem::remove_all(entry.full_path);
+                        } else {
+                            std::filesystem::remove(entry.full_path);
+                        }
+                        clear_dir_size_cache();
+                    } catch (const std::exception& ex) {
+                        confirm_popup(std::string("Error: ") + ex.what());
+                    }
+                }
+            }
+            break;
+            case 8: // Ctrl+H
+                show_help = !show_help;
                 break;
         }
 

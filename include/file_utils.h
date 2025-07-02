@@ -20,3 +20,5 @@ void build_tree_entries(const std::filesystem::path& path,
                         const std::set<std::filesystem::path>& expanded_dirs,
                         std::vector<EntryInfo>& out,
                         int depth = 0);
+
+void clear_dir_size_cache();

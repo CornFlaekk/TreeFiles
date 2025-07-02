@@ -4,6 +4,8 @@
 #include <algorithm>
 #include <set>
 #include <map>
+#include <unordered_map>
+#include <mutex>
 
 std::string human_readable_size(std::uintmax_t bytes) {
     const char* sizes[] = {"bytes", "KB", "MB", "GB", "TB"};
@@ -18,13 +20,27 @@ std::string human_readable_size(std::uintmax_t bytes) {
     return oss.str();
 }
 
+std::unordered_map<std::filesystem::path, std::uintmax_t> dir_size_cache;
+std::mutex cache_mutex;
+
 std::uintmax_t get_directory_size(const std::filesystem::path& dir_path) {
     namespace fs = std::filesystem;
+    {
+        std::lock_guard<std::mutex> lock(cache_mutex);
+        auto it = dir_size_cache.find(dir_path);
+        if (it != dir_size_cache.end()) {
+            return it->second;
+        }
+    }
     std::uintmax_t size = 0;
     for (const auto& entry : fs::recursive_directory_iterator(dir_path, fs::directory_options::skip_permission_denied)) {
         if (entry.is_regular_file()) {
             size += entry.file_size();
         }
+    }
+    {
+        std::lock_guard<std::mutex> lock(cache_mutex);
+        dir_size_cache[dir_path] = size;
     }
     return size;
 }
@@ -75,4 +91,9 @@ std::vector<EntryInfo> get_directory_entries(const std::filesystem::path& path, 
 std::set<std::filesystem::path>& get_expanded_dirs() {
     static std::set<std::filesystem::path> expanded_dirs;
     return expanded_dirs;
+}
+
+void clear_dir_size_cache() {
+    std::lock_guard<std::mutex> lock(cache_mutex);
+    dir_size_cache.clear();
 }
