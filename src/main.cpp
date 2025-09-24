@@ -64,7 +64,7 @@ int main() {
             std::thread loader([&]() {
                 entries.clear();
                 auto t0 = std::chrono::high_resolution_clock::now();
-                build_tree_entries(current_path, expanded_dirs, entries, 0);
+                build_tree_entries(current_path, expanded_dirs, entries, 0, 100); // max_files=100
                 auto t1 = std::chrono::high_resolution_clock::now();
                 last_scan_ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
                 loading = false;
@@ -122,14 +122,20 @@ int main() {
                 break;
             case 'e':
             case 'E':
-                if (!entries.empty() && entries[selected].type == "[DIR] ") {
-                    auto dir_path = entries[selected].full_path;
-                    if (expanded_dirs.count(dir_path)) {
-                        expanded_dirs.erase(dir_path);
-                    } else {
-                        expanded_dirs.insert(dir_path);
+                if (!entries.empty()) {
+                    const auto& entry = entries[selected];
+                    if (entry.type == "[DIR] ") {
+                        auto dir_path = entry.full_path;
+                        if (expanded_dirs.count(dir_path)) {
+                            expanded_dirs.erase(dir_path);
+                        } else {
+                            expanded_dirs.insert(dir_path);
+                        }
+                        need_refresh = true;
+                    } else if (entry.type == "[RESTO]") {
+                        expand_resto(entry.full_path);
+                        need_refresh = true;
                     }
-                    need_refresh = true;
                 }
                 break;
             case KEY_DC: // SUPR
