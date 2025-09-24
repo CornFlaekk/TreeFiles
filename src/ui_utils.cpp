@@ -1,3 +1,6 @@
+#include <thread>
+#include <chrono>
+#include <string>
 #include "ui_utils.h"
 #include <array>
 #include <tuple>
@@ -220,4 +223,69 @@ void draw_help_box(int rows, int cols, bool show) {
     }
     wrefresh(help_win);
     delwin(help_win);
+}
+
+std::string format_scan_time(double ms) {
+    if (ms < 1000.0) {
+        return std::to_string((int)ms) + " ms";
+    } else {
+        double secs = ms / 1000.0;
+        if (secs < 60.0) {
+            char buf[32];
+            snprintf(buf, sizeof(buf), "%.2f s", secs);
+            return std::string(buf);
+        } else {
+            int min = (int)(secs / 60.0);
+            double rem_secs = secs - min * 60.0;
+            char buf[32];
+            snprintf(buf, sizeof(buf), "%dm %ds", min, (int)rem_secs);
+            return std::string(buf);
+        }
+    }
+}
+
+void show_loading_animation(std::atomic<bool>& loading, std::atomic<bool>& started) {
+    const char* frames[] = {
+        "ooxooxoxx",
+        "oxxooxoox",
+        "xxxooxooo",
+        "xxxxooooo",
+        "xxoxooxoo",
+        "xooxooxxo",
+        "oooxooxxx",
+        "oooooxxxx"
+    };
+    int num_frames = sizeof(frames) / sizeof(frames[0]);
+    int frame = 0;
+    int rows, cols;
+    getmaxyx(stdscr, rows, cols);
+    int win_height = 7, win_width = 13;
+    int starty = (rows - win_height) / 2;
+    int startx = (cols - win_width) / 2;
+    int delay = 120; // ms por frame
+    int waited = 0;
+    while (loading && waited < 500) { // Espera hasta 500ms antes de mostrar
+        std::this_thread::sleep_for(std::chrono::milliseconds(delay));
+        waited += delay;
+    }
+    if (!loading) return;
+    started = true;
+    WINDOW* win = newwin(win_height, win_width, starty, startx);
+    box(win, 0, 0);
+    mvwprintw(win, 1, 3, "Loading");
+    wrefresh(win);
+    while (loading) {
+        for (int y = 0; y < 3; ++y) {
+            for (int x = 0; x < 3; ++x) {
+                char c = frames[frame][y*3 + x];
+                chtype ch = (c == 'x') ? ACS_DIAMOND : ' ';
+                mvwaddch(win, 3 + y, 4 + x * 2, ch); // Espacio entre iconos
+                mvwaddch(win, 3 + y, 4 + x * 2 + 1, ' '); // Espacio extra
+            }
+        }
+        wrefresh(win);
+        std::this_thread::sleep_for(std::chrono::milliseconds(delay));
+        frame = (frame + 1) % num_frames;
+    }
+    delwin(win);
 }

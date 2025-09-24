@@ -25,22 +25,32 @@ std::mutex cache_mutex;
 
 std::uintmax_t get_directory_size(const std::filesystem::path& dir_path) {
     namespace fs = std::filesystem;
+    fs::path norm_path = dir_path.lexically_normal();
     {
         std::lock_guard<std::mutex> lock(cache_mutex);
-        auto it = dir_size_cache.find(dir_path);
+        auto it = dir_size_cache.find(norm_path);
         if (it != dir_size_cache.end()) {
             return it->second;
         }
     }
     std::uintmax_t size = 0;
-    for (const auto& entry : fs::recursive_directory_iterator(dir_path, fs::directory_options::skip_permission_denied)) {
-        if (entry.is_regular_file()) {
-            size += entry.file_size();
+    try {
+        for (const auto& entry : fs::recursive_directory_iterator(norm_path, fs::directory_options::skip_permission_denied)) {
+            // Evitar seguir enlaces simbólicos
+            if (entry.is_symlink()) continue;
+            if (entry.is_regular_file()) {
+                auto sz = entry.file_size();
+                if (sz > (1ULL << 40)) continue; // Ignora archivos >1TB
+                size += sz;
+            }
         }
+    } catch (const fs::filesystem_error& ex) {
+        // Error al recorrer (demasiados enlaces, permisos, etc.)
+        return 0;
     }
     {
         std::lock_guard<std::mutex> lock(cache_mutex);
-        dir_size_cache[dir_path] = size;
+        dir_size_cache[norm_path] = size;
     }
     return size;
 }
