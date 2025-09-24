@@ -51,39 +51,43 @@ int main() {
     std::atomic<bool> loading(false);
     std::atomic<bool> anim_started(false);
 
+    std::vector<EntryInfo> entries;
+    bool need_refresh = true;
     while (running) {
         clear();
         draw_terminal_border();
         getmaxyx(stdscr, rows, cols);
         visible_rows = rows - (show_help ? 6 : 3);
-        std::vector<EntryInfo> entries;
-        loading = true;
-        anim_started = false;
-        std::thread loader([&]() {
-            auto t0 = std::chrono::high_resolution_clock::now();
-            build_tree_entries(current_path, expanded_dirs, entries, 0);
-            auto t1 = std::chrono::high_resolution_clock::now();
-            last_scan_ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
-            loading = false;
-        });
-        // Espera hasta 500ms antes de lanzar la animación
-        int waited = 0;
-        int anim_delay = 120;
-        while (loading && waited < 500) {
-            std::this_thread::sleep_for(std::chrono::milliseconds(anim_delay));
-            waited += anim_delay;
-        }
-        std::thread anim;
-        if (loading) {
-            anim = std::thread([&]() {
-                show_loading_animation(loading, anim_started);
+        if (need_refresh) {
+            loading = true;
+            anim_started = false;
+            std::thread loader([&]() {
+                entries.clear();
+                auto t0 = std::chrono::high_resolution_clock::now();
+                build_tree_entries(current_path, expanded_dirs, entries, 0);
+                auto t1 = std::chrono::high_resolution_clock::now();
+                last_scan_ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
+                loading = false;
             });
-        }
-        loader.join();
-        loading = false;
-        if (anim.joinable()) anim.join();
-        if (anim_started) {
-            std::this_thread::sleep_for(std::chrono::milliseconds(80));
+            int waited = 0;
+            int anim_delay = 120;
+            while (loading && waited < 500) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(anim_delay));
+                waited += anim_delay;
+            }
+            std::thread anim;
+            if (loading) {
+                anim = std::thread([&]() {
+                    show_loading_animation(loading, anim_started);
+                });
+            }
+            loader.join();
+            loading = false;
+            if (anim.joinable()) anim.join();
+            if (anim_started) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(80));
+            }
+            need_refresh = false;
         }
         // Redibujar la UI principal y la ayuda tras la animación
         clear();
@@ -97,11 +101,6 @@ int main() {
         int n = entries.size();
         if (n == 0) selected = 0;
         else if (selected >= n) selected = n - 1;
-        print_directory_entries(entries, selected, scroll_offset, visible_rows, 1, 2);
-        mvprintw(0, 2, "Flechas: mover | E: expandir/colapsar | Espacio: abrir | q: salir");
-        scan_str = format_scan_time(last_scan_ms);
-        mvprintw(rows-1, cols-15, "Scan: %s", scan_str.c_str());
-        draw_help_box(rows, cols, show_help);
         input = getch();
         switch (input) {
             case 'q':
@@ -130,26 +129,28 @@ int main() {
                     } else {
                         expanded_dirs.insert(dir_path);
                     }
+                    need_refresh = true;
                 }
                 break;
             case KEY_DC: // SUPR
-            if (!entries.empty()) {
-                const auto& entry = entries[selected];
-                std::string msg = "Delete \"" + entry.name + "\"?";
-                if (confirm_popup(msg)) {
-                    try {
-                        if (entry.type == "[DIR] ") {
-                            std::filesystem::remove_all(entry.full_path);
-                        } else {
-                            std::filesystem::remove(entry.full_path);
+                if (!entries.empty()) {
+                    const auto& entry = entries[selected];
+                    std::string msg = "Delete \"" + entry.name + "\"?";
+                    if (confirm_popup(msg)) {
+                        try {
+                            if (entry.type == "[DIR] ") {
+                                std::filesystem::remove_all(entry.full_path);
+                            } else {
+                                std::filesystem::remove(entry.full_path);
+                            }
+                            clear_dir_size_cache();
+                        } catch (const std::exception& ex) {
+                            confirm_popup(std::string("Error: ") + ex.what());
                         }
-                        clear_dir_size_cache();
-                    } catch (const std::exception& ex) {
-                        confirm_popup(std::string("Error: ") + ex.what());
+                        need_refresh = true;
                     }
                 }
-            }
-            break;
+                break;
             case 8: // Ctrl+H
                 show_help = !show_help;
                 break;
@@ -166,7 +167,6 @@ int main() {
                 }
                 break;
         }
-
         if (selected < scroll_offset) {
             scroll_offset = selected;
         } else if (selected >= scroll_offset + visible_rows) {
