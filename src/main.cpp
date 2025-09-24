@@ -96,8 +96,8 @@ int main() {
         mvprintw(0, 2, "Flechas: mover | E: expandir/colapsar | Espacio: abrir | q: salir");
         std::string scan_str = format_scan_time(last_scan_ms);
         mvprintw(rows-1, cols-15, "Scan: %s", scan_str.c_str());
-        draw_help_box(rows, cols, show_help);
         refresh();
+        draw_help_box(rows, cols, show_help);
         int n = entries.size();
         if (n == 0) selected = 0;
         else if (selected >= n) selected = n - 1;
