@@ -14,6 +14,8 @@
 #include <thread>
 #include <atomic>
 
+#define MAX_FILES_PER_PAGE 50
+
 int main() {
     initscr();
     noecho();
@@ -64,7 +66,7 @@ int main() {
             std::thread loader([&]() {
                 entries.clear();
                 auto t0 = std::chrono::high_resolution_clock::now();
-                build_tree_entries(current_path, expanded_dirs, entries, 0, 100); // max_files=100
+                build_tree_entries(current_path, expanded_dirs, entries, 0, MAX_FILES_PER_PAGE); // max_files=100
                 auto t1 = std::chrono::high_resolution_clock::now();
                 last_scan_ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
                 loading = false;
@@ -138,9 +140,11 @@ int main() {
                     } else if (entry.type == "[RESTO_NEXT]") {
                         expand_resto(entry.full_path);
                         need_refresh = true;
+                        selected -= MAX_FILES_PER_PAGE; // Selecciona el primer elemento visible tras avanzar página
                     } else if (entry.type == "[RESTO_PREV]") {
                         prev_resto(entry.full_path);
                         need_refresh = true;
+                        //selected = 0; // Selecciona el primer elemento visible tras retroceder página
                     }
                 }
                 break;
