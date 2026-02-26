@@ -135,6 +135,12 @@ int main() {
                     } else if (entry.type == "[RESTO]") {
                         expand_resto(entry.full_path);
                         need_refresh = true;
+                    } else if (entry.type == "[RESTO_NEXT]") {
+                        expand_resto(entry.full_path);
+                        need_refresh = true;
+                    } else if (entry.type == "[RESTO_PREV]") {
+                        prev_resto(entry.full_path);
+                        need_refresh = true;
                     }
                 }
                 break;

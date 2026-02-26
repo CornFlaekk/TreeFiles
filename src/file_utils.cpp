@@ -55,6 +55,7 @@ std::uintmax_t get_directory_size(const std::filesystem::path& dir_path) {
                 size += sz;
             }
         }
+                    
     } catch (const fs::filesystem_error& ex) {
         // Error al recorrer (demasiados enlaces, permisos, etc.)
         return 0;
@@ -101,22 +102,31 @@ void build_tree_entries(const std::filesystem::path& path,
         if (a.size != b.size) return a.size > b.size;
         return a.name < b.name;
     });
+
     int page = resto_state.resto_page[path];
+    int total_pages = (all_entries.size() + max_files - 1) / max_files;
+    if (page >= total_pages) page = resto_state.resto_page[path] = 0;
     int start_idx = page * max_files;
     int end_idx = std::min((int)all_entries.size(), start_idx + max_files);
+
+    // Botón retroceder página si no estamos en la primera
+    if (total_pages > 1 && page > 0) {
+        std::string label = "[< Página " + std::to_string(page+1) + "/" + std::to_string(total_pages) + "]";
+        out.push_back({"[RESTO_PREV]", label, path, 0, depth, false});
+    }
+
     // Añade los elementos de la página actual
     for (int i = start_idx; i < end_idx; ++i) {
         out.push_back(all_entries[i]);
-        // Si es directorio y está expandido, añade hijos
         if (all_entries[i].type == "[DIR] " && all_entries[i].expanded) {
             build_tree_entries(all_entries[i].full_path, expanded_dirs, out, depth + 1, max_files);
         }
     }
-    // Si hay más, añade el pseudo-entry [RESTO]
-    if (end_idx < (int)all_entries.size()) {
-        std::uintmax_t sum_rest = 0;
-        for (int i = end_idx; i < (int)all_entries.size(); ++i) sum_rest += all_entries[i].size;
-        out.push_back({"[RESTO]", "+" + std::to_string((int)all_entries.size() - end_idx) + " más", path, sum_rest, depth, expanded_dirs.count(path) > 0});
+
+    // Botón avanzar página si hay más
+    if (total_pages > 1 && page < total_pages-1) {
+        std::string label = "[> Página " + std::to_string(page+1) + "/" + std::to_string(total_pages) + "]";
+        out.push_back({"[RESTO_NEXT]", label, path, 0, depth, false});
     }
 }
 
@@ -124,6 +134,11 @@ void build_tree_entries(const std::filesystem::path& path,
 void expand_resto(const std::filesystem::path& path) {
     resto_state.resto_page[path]++;
 }
+
+void prev_resto(const std::filesystem::path& path) {
+    if (resto_state.resto_page[path] > 0) resto_state.resto_page[path]--;
+}
+
 void reset_resto(const std::filesystem::path& path) {
     resto_state.resto_page[path] = 0;
 }
