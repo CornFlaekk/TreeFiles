@@ -25,3 +25,4 @@ void build_tree_entries(const std::filesystem::path& path,
 void clear_dir_size_cache();
 void clear_tree_entries_cache();
 void expand_resto(const std::filesystem::path& path);
+void reset_resto_state();
