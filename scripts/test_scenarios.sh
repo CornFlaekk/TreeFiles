@@ -211,6 +211,58 @@ fi
 
 echo ""
 # ============================================================
+echo "=== Scenario 11: Pagination with n/p keys ==="
+setup_bigdir() {
+    cleanup
+    local dir="$TEST_DIR/bigdir"
+    mkdir -p "$dir"
+    for i in $(seq -w 1 50); do
+        dd if=/dev/zero of="$dir/file_${i}.txt" bs=1 count=1 2>/dev/null
+    done
+}
+
+run_headless_bigdir() {
+    local events="$1"
+    echo "$events" | "$BINARY" "$HEADLESS" "$TEST_DIR/bigdir" 2>&1
+}
+
+setup_bigdir
+output=$(run_headless_bigdir "q")
+f0=$(extract_frame "$output" 0)
+check "nav Siguiente appears for 50 files"     "$f0" "Siguiente"
+check_not "no Anterior on page 0"               "$f0" "Anterior"
+# 30 files + 1 nav = 31 entries, index 30 is nav
+check "entry index 30 is nav" "$f0" " 30:.*---.*Siguiente"
+
+# Test n key advances to page 1
+setup_bigdir
+output=$(run_headless_bigdir "n
+q")
+f0=$(extract_frame "$output" 0)
+f1=$(extract_frame "$output" 1)
+check "after n: Anterior present"              "$f1" "Anterior"
+check_not "after n: no Siguiente (last page)"   "$f1" "Siguiente"
+check "after n: selected on first content"      "$f1" "selected_index: 1"
+
+# Test p key returns to page 0
+setup_bigdir
+output=$(run_headless_bigdir "n
+p
+q")
+f2=$(extract_frame "$output" 2)
+check "after p: Siguiente back"                "$f2" "Siguiente"
+check_not "after p: no Anterior"               "$f2" "Anterior"
+
+# Test p on page 0 does nothing (no crash)
+setup_bigdir
+output=$(run_headless_bigdir "p
+q")
+f1=$(extract_frame "$output" 1)
+check "p on page 0: still page 0" "$f1" "Siguiente"
+check_not "p on page 0: no Anterior" "$f1" "Anterior"
+
+echo ""
+# ============================================================
 cleanup
 
 echo "Results: $PASS passed, $FAIL failed"
