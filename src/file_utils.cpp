@@ -127,6 +127,9 @@ void expand_resto(const std::filesystem::path& path) {
 void reset_resto(const std::filesystem::path& path) {
     resto_state.resto_page[path] = 0;
 }
+void reset_resto_state() {
+    resto_state.resto_page.clear();
+}
 
 // Devuelve el vector plano para mostrar en la UI
 std::vector<EntryInfo> get_directory_entries(const std::filesystem::path& path, int depth) {
