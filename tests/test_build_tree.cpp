@@ -55,7 +55,7 @@ void test_sorted_by_size_descending() {
     expanded.clear();
 
     std::vector<EntryInfo> entries;
-    build_tree_entries(BASE, expanded, entries, 0, 100);
+    build_tree_entries(BASE, expanded, entries, 0, 30);
 
     CHECK(entries.size() >= 3);
     CHECK(entries[0].size >= entries[1].size);
@@ -75,7 +75,7 @@ void test_file_types() {
     expanded.clear();
 
     std::vector<EntryInfo> entries;
-    build_tree_entries(BASE, expanded, entries, 0, 100);
+    build_tree_entries(BASE, expanded, entries, 0, 30);
 
     bool found_file = false;
     bool found_dir = false;
@@ -102,7 +102,7 @@ void test_expanded_directories() {
     expanded.insert(fs::path(std::string(BASE) + "/dir_a"));
 
     std::vector<EntryInfo> entries;
-    build_tree_entries(BASE, expanded, entries, 0, 100);
+    build_tree_entries(BASE, expanded, entries, 0, 30);
 
     bool found_child = false;
     for (const auto& e : entries) {
@@ -125,7 +125,7 @@ void test_depth_increases_for_children() {
     expanded.insert(fs::path(std::string(BASE) + "/dir_a"));
 
     std::vector<EntryInfo> entries;
-    build_tree_entries(BASE, expanded, entries, 0, 100);
+    build_tree_entries(BASE, expanded, entries, 0, 30);
 
     for (const auto& e : entries) {
         if (e.type == "[DIR] " && e.name == "dir_a") {
@@ -152,7 +152,7 @@ void test_alphabetic_tiebreaker() {
     expanded.clear();
 
     std::vector<EntryInfo> entries;
-    build_tree_entries(BASE, expanded, entries, 0, 100);
+    build_tree_entries(BASE, expanded, entries, 0, 30);
 
     std::vector<std::string> names;
     for (const auto& e : entries) {

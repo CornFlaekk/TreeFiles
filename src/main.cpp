@@ -1,3 +1,4 @@
+#include <clocale>
 #include <ncurses.h>
 #include <ui_utils.h>
 #include <file_utils.h>
@@ -66,24 +67,30 @@ static void headless_dump_frame(const std::vector<EntryInfo>& entries, int selec
     const int BAR_WIDTH = 40;
     for (size_t i = 0; i < entries.size(); ++i) {
         const auto& e = entries[i];
+        bool is_nav = (e.type == "[RESTO_NEXT]" || e.type == "[RESTO_PREV]");
         std::string indent(e.depth * 2, ' ');
-        double percent = std::min(1.0, (double)e.size / parent_sizes[i]);
-        int filled = (int)(BAR_WIDTH * percent);
-        int unfilled = BAR_WIDTH - filled;
-
-        std::string size_str = human_readable_size(e.size);
-        char pct_buf[16];
-        snprintf(pct_buf, sizeof(pct_buf), "%3d%%", (int)(percent * 100));
-
-        std::string bar;
-        for (int b = 0; b < filled; ++b) bar += "\u2588";
-        for (int b = 0; b < unfilled; ++b) bar += "\u2591";
-
         std::string marker = ((int)i == selected) ? ">>>" : "   ";
 
-        std::cout << "  " << i << ": " << marker << " " << indent
-                  << e.type << " " << e.name
-                  << "  " << size_str << "  (" << pct_buf << ") " << bar << std::endl;
+        if (is_nav) {
+            std::cout << "  " << i << ": " << marker << " " << indent
+                      << "--- " << e.name << " ---" << std::endl;
+        } else {
+            double percent = std::min(1.0, (double)e.size / parent_sizes[i]);
+            int filled = (int)(BAR_WIDTH * percent);
+            int unfilled = BAR_WIDTH - filled;
+
+            std::string size_str = human_readable_size(e.size);
+            char pct_buf[16];
+            snprintf(pct_buf, sizeof(pct_buf), "%3d%%", (int)(percent * 100));
+
+            std::string bar;
+            for (int b = 0; b < filled; ++b) bar += "\u2588";
+            for (int b = 0; b < unfilled; ++b) bar += "\u2591";
+
+            std::cout << "  " << i << ": " << marker << " " << indent
+                      << e.type << " " << e.name
+                      << "  " << size_str << "  (" << pct_buf << ") " << bar << std::endl;
+        }
     }
     std::cout << "=== END FRAME ===" << std::endl;
 }
@@ -99,6 +106,64 @@ static int parse_headless_event(const std::string& line) {
     if (line == "ENTER")       return '\n';
     if (line.size() == 1)      return line[0];
     return -1;
+}
+
+static void clamp_and_skip_selection(const std::vector<EntryInfo>& entries, int& selected,
+                                      std::filesystem::path& select_first_owner,
+                                      std::filesystem::path& select_last_owner) {
+    int n = (int)entries.size();
+    if (!select_first_owner.empty()) {
+        selected = 0;
+        for (int i = 0; i < n; ++i) {
+            if (entries[i].type == "[RESTO_PREV]" && entries[i].full_path == select_first_owner) {
+                selected = i + 1;
+                break;
+            }
+        }
+        select_first_owner.clear();
+    }
+    if (!select_last_owner.empty()) {
+        selected = n - 1;
+        for (int i = n - 1; i >= 0; --i) {
+            if (entries[i].type == "[RESTO_NEXT]" && entries[i].full_path == select_last_owner) {
+                selected = i - 1;
+                break;
+            }
+        }
+        select_last_owner.clear();
+    }
+    if (n == 0) selected = 0;
+    else if (selected >= n) selected = n - 1;
+}
+
+static std::filesystem::path find_pagination_owner(const std::vector<EntryInfo>& entries,
+                                                     int selected,
+                                                     const std::filesystem::path& root) {
+    if (entries.empty() || selected < 0 || selected >= (int)entries.size())
+        return root;
+
+    const auto& e = entries[selected];
+
+    if (e.type == "[RESTO_NEXT]" || e.type == "[RESTO_PREV]")
+        return e.full_path;
+    if (e.type == "[DIR] ")
+        return e.full_path;
+
+    int sel_depth = e.depth;
+    for (int i = selected - 1; i >= 0; --i) {
+        if (entries[i].depth < sel_depth)
+            return entries[i].full_path;
+    }
+
+    return root;
+}
+
+static void update_scroll(int selected, int& scroll_offset, int visible_rows) {
+    if (selected < scroll_offset) {
+        scroll_offset = selected;
+    } else if (selected >= scroll_offset + visible_rows) {
+        scroll_offset = selected - visible_rows + 1;
+    }
 }
 
 int main(int argc, char* argv[]) {
@@ -131,12 +196,14 @@ int main(int argc, char* argv[]) {
 
         std::vector<EntryInfo> entries;
         bool need_refresh = true;
+        std::filesystem::path select_first_owner;
+        std::filesystem::path select_last_owner;
         int frame_num = 0;
 
         auto rebuild_tree = [&]() {
             entries.clear();
             auto t0 = std::chrono::high_resolution_clock::now();
-            build_tree_entries(current_path, expanded_dirs, entries, 0, 100);
+            build_tree_entries(current_path, expanded_dirs, entries, 0, 30);
             auto t1 = std::chrono::high_resolution_clock::now();
             last_scan_ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
             need_refresh = false;
@@ -194,15 +261,49 @@ int main(int argc, char* argv[]) {
                             expanded_dirs.insert(dir_path);
                         }
                         need_refresh = true;
-                    } else if (entry.type == "[RESTO]") {
+                    } else if (entry.type == "[RESTO_NEXT]") {
                         expand_resto(entry.full_path);
                         need_refresh = true;
+                        select_first_owner = entry.full_path;
+                    } else if (entry.type == "[RESTO_PREV]") {
+                        prev_resto(entry.full_path);
+                        need_refresh = true;
+                        select_last_owner = entry.full_path;
+                    }
+                }
+                break;
+            case 'n':
+                if (!entries.empty()) {
+                    auto owner = find_pagination_owner(entries, selected, current_path);
+                    bool has_next = false;
+                    for (const auto& e : entries) {
+                        if (e.type == "[RESTO_NEXT]" && e.full_path == owner) {
+                            has_next = true;
+                            break;
+                        }
+                    }
+                    if (has_next) {
+                        expand_resto(owner);
+                        need_refresh = true;
+                        select_first_owner = owner;
+                    }
+                }
+                break;
+            case 'p':
+                if (!entries.empty()) {
+                    auto owner = find_pagination_owner(entries, selected, current_path);
+                    if (get_current_page(owner) > 0) {
+                        prev_resto(owner);
+                        need_refresh = true;
+                        select_last_owner = owner;
                     }
                 }
                 break;
             case KEY_DC:
                 if (!entries.empty()) {
                     const auto& entry = entries[selected];
+                    if (entry.type == "[RESTO_PREV]" || entry.type == "[RESTO_NEXT]")
+                        break;
                     std::cout << "=== POPUP confirm_delete ===" << std::endl;
                     std::cout << "message: Delete \"" << entry.name << "\"?" << std::endl;
                     std::cout << "=== END POPUP ===" << std::endl;
@@ -246,19 +347,11 @@ int main(int argc, char* argv[]) {
                 break;
             }
 
-            int n = (int)entries.size();
-            if (n == 0) selected = 0;
-            else if (selected >= n) selected = n - 1;
-
-            if (selected < scroll_offset) {
-                scroll_offset = selected;
-            } else if (selected >= scroll_offset + visible_rows) {
-                scroll_offset = selected - visible_rows + 1;
-            }
-
             if (!popup_handled || need_refresh) {
                 if (need_refresh)
                     rebuild_tree();
+                clamp_and_skip_selection(entries, selected, select_first_owner, select_last_owner);
+                update_scroll(selected, scroll_offset, visible_rows);
                 headless_dump_frame(entries, selected, scroll_offset, visible_rows,
                                     current_path, expanded_dirs, show_help, last_scan_ms,
                                     bar_fg, bar_bg, frame_num);
@@ -269,6 +362,7 @@ int main(int argc, char* argv[]) {
     }
 
     // ==================== NCURSES MODE ====================
+    setlocale(LC_ALL, "");
     initscr();
     noecho();
     cbreak();
@@ -305,6 +399,8 @@ int main(int argc, char* argv[]) {
 
     std::vector<EntryInfo> entries;
     bool need_refresh = true;
+    std::filesystem::path select_first_owner;
+    std::filesystem::path select_last_owner;
     while (running) {
         clear();
         draw_terminal_border();
@@ -316,7 +412,7 @@ int main(int argc, char* argv[]) {
             std::thread loader([&]() {
                 entries.clear();
                 auto t0 = std::chrono::high_resolution_clock::now();
-                build_tree_entries(current_path, expanded_dirs, entries, 0, 100);
+                build_tree_entries(current_path, expanded_dirs, entries, 0, 30);
                 auto t1 = std::chrono::high_resolution_clock::now();
                 last_scan_ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
                 loading = false;
@@ -341,6 +437,9 @@ int main(int argc, char* argv[]) {
             }
             need_refresh = false;
         }
+        clamp_and_skip_selection(entries, selected, select_first_owner, select_last_owner);
+        update_scroll(selected, scroll_offset, visible_rows);
+
         clear();
         draw_terminal_border();
         print_directory_entries(entries, selected, scroll_offset, visible_rows, 1, 2);
@@ -349,9 +448,6 @@ int main(int argc, char* argv[]) {
         mvprintw(rows - 1, cols - 15, "Scan: %s", scan_str.c_str());
         refresh();
         draw_help_box(rows, cols, show_help);
-        int n = (int)entries.size();
-        if (n == 0) selected = 0;
-        else if (selected >= n) selected = n - 1;
         input = getch();
         switch (input) {
             case 'q':
@@ -362,7 +458,7 @@ int main(int argc, char* argv[]) {
                 if (selected > 0) selected--;
                 break;
             case KEY_DOWN:
-                if (selected < n - 1) selected++;
+                if (selected < (int)entries.size() - 1) selected++;
                 break;
             case ' ':
                 if (!entries.empty()) {
@@ -383,15 +479,49 @@ int main(int argc, char* argv[]) {
                             expanded_dirs.insert(dir_path);
                         }
                         need_refresh = true;
-                    } else if (entry.type == "[RESTO]") {
+                    } else if (entry.type == "[RESTO_NEXT]") {
                         expand_resto(entry.full_path);
                         need_refresh = true;
+                        select_first_owner = entry.full_path;
+                    } else if (entry.type == "[RESTO_PREV]") {
+                        prev_resto(entry.full_path);
+                        need_refresh = true;
+                        select_last_owner = entry.full_path;
+                    }
+                }
+                break;
+            case 'n':
+                if (!entries.empty()) {
+                    auto owner = find_pagination_owner(entries, selected, current_path);
+                    bool has_next = false;
+                    for (const auto& e : entries) {
+                        if (e.type == "[RESTO_NEXT]" && e.full_path == owner) {
+                            has_next = true;
+                            break;
+                        }
+                    }
+                    if (has_next) {
+                        expand_resto(owner);
+                        need_refresh = true;
+                        select_first_owner = owner;
+                    }
+                }
+                break;
+            case 'p':
+                if (!entries.empty()) {
+                    auto owner = find_pagination_owner(entries, selected, current_path);
+                    if (get_current_page(owner) > 0) {
+                        prev_resto(owner);
+                        need_refresh = true;
+                        select_last_owner = owner;
                     }
                 }
                 break;
             case KEY_DC:
                 if (!entries.empty()) {
                     const auto& entry = entries[selected];
+                    if (entry.type == "[RESTO_PREV]" || entry.type == "[RESTO_NEXT]")
+                        break;
                     std::string msg = "Delete \"" + entry.name + "\"?";
                     if (confirm_popup(msg)) {
                         try {
@@ -424,11 +554,7 @@ int main(int argc, char* argv[]) {
                 }
                 break;
         }
-        if (selected < scroll_offset) {
-            scroll_offset = selected;
-        } else if (selected >= scroll_offset + visible_rows) {
-            scroll_offset = selected - visible_rows + 1;
-        }
+        update_scroll(selected, scroll_offset, visible_rows);
     }
 
     endwin();

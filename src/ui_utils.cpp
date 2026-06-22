@@ -42,52 +42,57 @@ void print_directory_entries(const std::vector<EntryInfo>& entries, int selected
         if (idx >= (int)entries.size()) break;
         const auto& e = entries[idx];
 
+        bool is_nav = (e.type == "[RESTO_NEXT]" || e.type == "[RESTO_PREV]");
+
         std::string indent(e.depth * 2, ' ');
         int indent_width = indent.length();
-
-        double percent = std::min(1.0, (double)e.size / parent_sizes[idx]);
-        int bar_width = std::max(1, (int)((cols - start_col - indent_width - 2) * percent));
 
         int bar_row = start_row + i;
         int bar_col = start_col + indent_width;
 
-        // 1. Prepara el texto
-        std::string size_str = human_readable_size(e.size);
-        std::string entry_text = e.type + " " + e.name + "  " + size_str;
-        std::string full_text = indent + entry_text;
-
         attron(COLOR_PAIR(1));
         mvprintw(bar_row, start_col, "%s", indent.c_str());
         attroff(COLOR_PAIR(1));
-        attron(COLOR_PAIR(2));
-        for (int b = 0; b < bar_width; ++b) {
-            mvaddch(bar_row, bar_col + b, ' ');
-        }
-        attroff(COLOR_PAIR(2));
 
-        if (idx == selected) attron(A_REVERSE);
-        for (size_t c = 0; c < full_text.size() && (start_col + (int)c) < cols - 1; ++c) {
-            int col = start_col + c;
-            // Si el carácter está en la indentación, fondo por defecto
-            if ((int)c < indent_width) {
-                attron(COLOR_PAIR(1));
-                mvaddch(bar_row, col, full_text[c]);
-                attroff(COLOR_PAIR(1));
+        if (is_nav) {
+            if (idx == selected) attron(A_REVERSE);
+            attron(A_BOLD);
+            mvaddstr(bar_row, bar_col, e.name.c_str());
+            attroff(A_BOLD);
+            if (idx == selected) attroff(A_REVERSE);
+        } else {
+            double percent = std::min(1.0, (double)e.size / parent_sizes[idx]);
+            int bar_width = std::max(1, (int)((cols - start_col - indent_width - 2) * percent));
+
+            attron(COLOR_PAIR(2));
+            for (int b = 0; b < bar_width; ++b) {
+                mvaddch(bar_row, bar_col + b, ' ');
             }
-            // Si el carácter está sobre la barra, fondo cyan
-            else if ((col - start_col - indent_width) < bar_width) {
-                attron(COLOR_PAIR(2));
-                mvaddch(bar_row, col, full_text[c]);
-                attroff(COLOR_PAIR(2));
+            attroff(COLOR_PAIR(2));
+
+            std::string size_str = human_readable_size(e.size);
+            std::string entry_text = e.type + " " + e.name + "  " + size_str;
+            std::string full_text = indent + entry_text;
+
+            if (idx == selected) attron(A_REVERSE);
+            for (size_t c = 0; c < full_text.size() && (start_col + (int)c) < cols - 1; ++c) {
+                int col = start_col + c;
+                if ((int)c < indent_width) {
+                    attron(COLOR_PAIR(1));
+                    mvaddch(bar_row, col, full_text[c]);
+                    attroff(COLOR_PAIR(1));
+                } else if ((col - start_col - indent_width) < bar_width) {
+                    attron(COLOR_PAIR(2));
+                    mvaddch(bar_row, col, full_text[c]);
+                    attroff(COLOR_PAIR(2));
+                } else {
+                    attron(COLOR_PAIR(1));
+                    mvaddch(bar_row, col, full_text[c]);
+                    attroff(COLOR_PAIR(1));
+                }
             }
-            // Si el carácter está fuera de la barra, fondo por defecto
-            else {
-                attron(COLOR_PAIR(1));
-                mvaddch(bar_row, col, full_text[c]);
-                attroff(COLOR_PAIR(1));
-            }
+            if (idx == selected) attroff(A_REVERSE);
         }
-        if (idx == selected) attroff(A_REVERSE);
     }
 }
 
@@ -215,7 +220,7 @@ void draw_help_box(int rows, int cols, bool show) {
     box(help_win, 0, 0);
     if (show) {
         mvwprintw(help_win, 1, 2, "^H Ayuda  |  Flechas: Mover  |  E: Expandir/Colapsar  |  Espacio: Abrir  |  SUPR: Borrar");
-        mvwprintw(help_win, 2, 2, "Y/N/Enter: Confirmar  |  Q: Salir");
+        mvwprintw(help_win, 2, 2, "N/P: Pag siguiente/anterior  |  Y/N/Enter: Confirmar  |  Q: Salir");
         mvwprintw(help_win, 3, 2, "Ctrl+H: Ocultar ayuda");
         mvwprintw(help_win, 4, 2, "B: Cambiar color de barra");
     } else {

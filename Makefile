@@ -6,7 +6,7 @@ CXX = g++
 CXXFLAGS = -Wall -Wextra -std=c++17 -Iinclude
 
 # Librerías necesarias
-LIBS = -lncurses
+LIBS = -lncursesw
 
 # Directorios
 SRC_DIR = src
@@ -73,6 +73,13 @@ test-integration:
 
 # Ejecutar todos los tests
 test: test-unit test-integration
+
+# Instalar symlink treef → treefiles en ~/.local/bin
+install: $(TARGET)
+	mkdir -p "$$HOME/.local/bin"
+	ln -sf "$(PWD)/$(TARGET)" "$$HOME/.local/bin/treef"
+	@echo "treef → $(PWD)/$(TARGET)"
+	@echo "Asegúrate de tener ~/.local/bin en tu PATH"
 
 # Limpiar archivos generados
 clean:
