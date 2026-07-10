@@ -58,72 +58,135 @@ void draw_header(int cols, const std::filesystem::path& current_path, int page, 
     }
 }
 
-int footer_height(int cols) {
-    static const char* parts[] = {"\u2191\u2193 mover", "E expandir", "N/P pagina", "Q salir", "B color"};
-    int lines = 1;
-    int len = 0;
-    for (int i = 0; i < 5; i++) {
-        int plen = (int)strlen(parts[i]);
-        int add = (i > 0) ? 3 + plen : plen; // " | " separator
-        if (len + add > cols - 4) {
+struct FooterSection {
+    const char* name;
+    std::vector<const char*> bindings;
+};
+
+static const FooterSection sections[] = {
+    {"Navegar",   {"[\u2191\u2193] mover", "[N/P] pag"}},
+    {"Acciones",  {"[E] exp", "[Spc] abrir", "[Del] borrar"}},
+    {"Sistema",   {"[B] color", "[Q] salir"}},
+};
+
+// Build a flat string of bindings for a section
+static std::string section_bindings(const FooterSection& sec) {
+    std::string s;
+    for (size_t i = 0; i < sec.bindings.size(); ++i) {
+        if (i > 0) s += " ";
+        s += sec.bindings[i];
+    }
+    return s;
+}
+
+static int count_content_lines(int cols) {
+    if (cols > 80) return 2; // wide: headers + bindings
+
+    // Narrow: one line per section (+ wrapping if needed)
+    int lines = 0;
+    for (auto& sec : sections) {
+        std::string line = sec.name + std::string(": ");
+        line += section_bindings(sec);
+        // Wrap if too long
+        int max_w = cols - 4;
+        lines++;
+        int remaining = (int)line.size() - max_w;
+        while (remaining > 0) {
             lines++;
-            len = plen;
-        } else {
-            len += add;
+            remaining -= max_w;
         }
     }
-    return lines + 2; // hints lines + separator + bottom border
+    return lines;
+}
+
+int footer_height(int cols) {
+    return count_content_lines(cols) + 2; // content + separator + bottom
 }
 
 void draw_footer(int rows, int cols, int selected, int total_entries, double last_scan_ms) {
-    static const char* parts[] = {"\u2191\u2193 mover", "E expandir", "N/P pagina", "Q salir", "B color"};
-
-    // Build lines
-    std::vector<std::string> lines_vec;
-    std::string current;
-    for (int i = 0; i < 5; i++) {
-        std::string part = parts[i];
-        std::string add = (i > 0) ? " | " + part : part;
-        if ((int)current.size() + (int)add.size() > cols - 4) {
-            if (!current.empty()) lines_vec.push_back(current);
-            current = part;
-        } else {
-            current += add;
-        }
-    }
-    if (!current.empty()) lines_vec.push_back(current);
-
-    int lines = (int)lines_vec.size();
-    int footer_start = rows - 2 - lines;
+    int content_lines = count_content_lines(cols);
+    int footer_start = rows - 2 - content_lines;
 
     // Top separator
     draw_horizontal_line(footer_start, 0, cols - 1, ACS_LTEE, ACS_HLINE, ACS_RTEE);
 
-    // Hints lines inside box
-    for (int l = 0; l < lines; l++) {
-        int row = footer_start + 1 + l;
-        mvaddch(row, 0, ACS_VLINE);
-        mvaddch(row, cols - 1, ACS_VLINE);
-        mvaddstr(row, 2, lines_vec[l].c_str());
-    }
-
-    // Right info on last line if it fits
+    // Right info string (embedded in bottom border later)
     char right_buf[64];
     std::string scan_str = format_scan_time(last_scan_ms);
     if (total_entries > 0) {
-        snprintf(right_buf, sizeof(right_buf), "%d/%d  Scan: %s", selected + 1, total_entries, scan_str.c_str());
+        snprintf(right_buf, sizeof(right_buf), " %d/%d  Scan: %s ", selected + 1, total_entries, scan_str.c_str());
     } else {
-        snprintf(right_buf, sizeof(right_buf), "Scan: %s", scan_str.c_str());
-    }
-    int last_row = footer_start + lines;
-    int right_x = cols - 2 - (int)strlen(right_buf);
-    if (right_x > 2 + (int)lines_vec.back().size() + 2) {
-        // Fits after hints on last line
-        mvaddstr(last_row, right_x, right_buf);
+        snprintf(right_buf, sizeof(right_buf), " Scan: %s ", scan_str.c_str());
     }
 
-    // Bottom border
-    draw_horizontal_line(rows - 1, 0, cols - 1, ACS_LLCORNER, ACS_HLINE, ACS_LRCORNER);
+    if (cols > 80) {
+        int row1 = footer_start + 1;
+        int row2 = footer_start + 2;
+
+        mvaddch(row1, 0, ACS_VLINE);
+        mvaddch(row2, 0, ACS_VLINE);
+        mvaddch(row1, cols - 1, ACS_VLINE);
+        mvaddch(row2, cols - 1, ACS_VLINE);
+
+        int sect_w = (cols - 4) / 3;
+        for (int s = 0; s < 3; ++s) {
+            int col = 2 + s * (sect_w + 1);
+
+            attron(A_BOLD);
+            mvaddstr(row1, col, sections[s].name);
+            attroff(A_BOLD);
+
+            if (s < 2) {
+                int mid = col + sect_w;
+                mvaddch(row1, mid, ACS_VLINE);
+            }
+
+            mvaddstr(row2, col, section_bindings(sections[s]).c_str());
+            if (s < 2) {
+                int mid = col + sect_w;
+                mvaddch(row2, mid, ACS_VLINE);
+            }
+        }
+    } else {
+        int row = footer_start + 1;
+        for (auto& sec : sections) {
+            mvaddch(row, 0, ACS_VLINE);
+            mvaddch(row, cols - 1, ACS_VLINE);
+
+            std::string header = sec.name + std::string(": ");
+            attron(A_BOLD);
+            mvaddstr(row, 2, header.c_str());
+            attroff(A_BOLD);
+
+            int hdr_w = (int)header.size();
+            int max_w = cols - 4;
+            std::string binds = section_bindings(sec);
+            std::string first_line = binds.substr(0, max_w - hdr_w);
+            mvaddstr(row, 2 + hdr_w, first_line.c_str());
+
+            size_t pos = first_line.size();
+            while (pos < binds.size()) {
+                row++;
+                mvaddch(row, 0, ACS_VLINE);
+                mvaddch(row, cols - 1, ACS_VLINE);
+                std::string remnant = binds.substr(pos, max_w - 2);
+                mvaddstr(row, 4, remnant.c_str());
+                pos += remnant.size();
+            }
+            row++;
+        }
+    }
+
+    // Bottom border with embedded scan/position info
+    int right_w = (int)strlen(right_buf);
+    int right_x = cols - 2 - right_w;
+    if (right_x < 2) right_x = 2;
+
+    mvaddch(rows - 1, 0, ACS_LLCORNER);
+    for (int c = 1; c < right_x; ++c) mvaddch(rows - 1, c, ACS_HLINE);
+    mvaddstr(rows - 1, right_x, right_buf);
+    for (int c = right_x + right_w; c < cols - 1; ++c) mvaddch(rows - 1, c, ACS_HLINE);
+    mvaddch(rows - 1, cols - 1, ACS_LRCORNER);
 }
 
 static bool is_last_sibling(const std::vector<EntryInfo>& entries, int idx) {
