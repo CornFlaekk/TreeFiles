@@ -19,14 +19,18 @@ static void headless_dump_frame(const std::vector<EntryInfo>& entries, int selec
                                 int scroll_offset, int visible_rows,
                                 const std::filesystem::path& current_path,
                                 const std::set<std::filesystem::path>& expanded_dirs,
-                                bool show_help, double last_scan_ms,
-                                int bar_fg, int bar_bg, int frame_num) {
+                                double last_scan_ms,
+                                int bar_fg, int bar_bg, int frame_num,
+                                int total_pages, int current_page) {
     std::cout << "=== FRAME " << frame_num << " ===" << std::endl;
     std::cout << "current_path: " << current_path.string() << std::endl;
     std::cout << "selected_index: " << selected << std::endl;
     std::cout << "scroll_offset: " << scroll_offset << std::endl;
     std::cout << "visible_rows: " << visible_rows << std::endl;
-    std::cout << "show_help: " << (show_help ? "true" : "false") << std::endl;
+    std::cout << "total_entries: " << entries.size() << std::endl;
+    if (total_pages > 1) {
+        std::cout << "pagination: page " << (current_page + 1) << " of " << total_pages << std::endl;
+    }
 
     std::cout << "expanded_dirs: {";
     bool first_dir = true;
@@ -185,7 +189,6 @@ int main(int argc, char* argv[]) {
         int selected = 0;
         int scroll_offset = 0;
         int visible_rows = 30;
-        bool show_help = true;
 
         int bar_bg = COLOR_YELLOW;
         int bar_fg = COLOR_BLACK;
@@ -209,10 +212,28 @@ int main(int argc, char* argv[]) {
             need_refresh = false;
         };
 
+        auto get_page_info = [&](int& total_pages, int& current_page) {
+            current_page = ::get_current_page(current_path);
+            total_pages = 1;
+            for (const auto& e : entries) {
+                if ((e.type == "[RESTO_NEXT]" || e.type == "[RESTO_PREV]") && e.full_path == current_path) {
+                    std::string label = e.name;
+                    auto paren = label.rfind('(');
+                    auto slash = label.rfind('/');
+                    if (paren != std::string::npos && slash != std::string::npos && slash > paren) {
+                        total_pages = std::stoi(label.substr(paren + 1, slash - paren - 1));
+                    }
+                    break;
+                }
+            }
+        };
+
         rebuild_tree();
+        int total_pages = 1, current_page = 0;
+        get_page_info(total_pages, current_page);
         headless_dump_frame(entries, selected, scroll_offset, visible_rows,
-                            current_path, expanded_dirs, show_help, last_scan_ms,
-                            bar_fg, bar_bg, frame_num);
+                            current_path, expanded_dirs, last_scan_ms,
+                            bar_fg, bar_bg, frame_num, total_pages, current_page);
         frame_num++;
 
         std::string event_line;
@@ -335,9 +356,6 @@ int main(int argc, char* argv[]) {
                     popup_handled = true;
                 }
                 break;
-            case 8:
-                show_help = !show_help;
-                break;
             case 'b':
                 std::cout << "=== POPUP bar_color ===" << std::endl;
                 std::cout << "colors: black, red, green, yellow, blue, magenta, cyan, white"
@@ -352,9 +370,11 @@ int main(int argc, char* argv[]) {
                     rebuild_tree();
                 clamp_and_skip_selection(entries, selected, select_first_owner, select_last_owner);
                 update_scroll(selected, scroll_offset, visible_rows);
+                int tp = 1, cp = 0;
+                get_page_info(tp, cp);
                 headless_dump_frame(entries, selected, scroll_offset, visible_rows,
-                                    current_path, expanded_dirs, show_help, last_scan_ms,
-                                    bar_fg, bar_bg, frame_num);
+                                    current_path, expanded_dirs, last_scan_ms,
+                                    bar_fg, bar_bg, frame_num, tp, cp);
                 frame_num++;
             }
         }
@@ -388,8 +408,7 @@ int main(int argc, char* argv[]) {
     int scroll_offset = 0;
     int rows, cols;
     getmaxyx(stdscr, rows, cols);
-    int visible_rows = rows - 2;
-    bool show_help = true;
+    int visible_rows = rows - 1 - footer_height(cols);
 
     std::filesystem::path current_path = start_path;
     auto& expanded_dirs = get_expanded_dirs();
@@ -397,15 +416,18 @@ int main(int argc, char* argv[]) {
     std::atomic<bool> loading(false);
     std::atomic<bool> anim_started(false);
 
+    int total_pages = 1;
+    int current_page = 0;
+
     std::vector<EntryInfo> entries;
     bool need_refresh = true;
     std::filesystem::path select_first_owner;
     std::filesystem::path select_last_owner;
     while (running) {
         clear();
-        draw_terminal_border();
         getmaxyx(stdscr, rows, cols);
-        visible_rows = rows - (show_help ? 6 : 3);
+        visible_rows = rows - 4;
+        if (visible_rows < 1) visible_rows = 1;
         if (need_refresh) {
             loading = true;
             anim_started = false;
@@ -440,14 +462,25 @@ int main(int argc, char* argv[]) {
         clamp_and_skip_selection(entries, selected, select_first_owner, select_last_owner);
         update_scroll(selected, scroll_offset, visible_rows);
 
+        current_page = get_current_page(current_path);
+        total_pages = 1;
+        for (const auto& e : entries) {
+            if ((e.type == "[RESTO_NEXT]" || e.type == "[RESTO_PREV]") && e.full_path == current_path) {
+                std::string label = e.name;
+                auto paren = label.rfind('(');
+                auto slash = label.rfind('/');
+                if (paren != std::string::npos && slash != std::string::npos && slash > paren) {
+                    total_pages = std::stoi(label.substr(paren + 1, slash - paren - 1));
+                }
+                break;
+            }
+        }
+
         clear();
-        draw_terminal_border();
-        print_directory_entries(entries, selected, scroll_offset, visible_rows, 1, 2);
-        mvprintw(0, 2, "Flechas: mover | E: expandir/colapsar | Espacio: abrir | q: salir");
-        std::string scan_str = format_scan_time(last_scan_ms);
-        mvprintw(rows - 1, cols - 15, "Scan: %s", scan_str.c_str());
+        draw_header(cols, current_path, current_page, total_pages);
+        print_directory_entries(entries, selected, scroll_offset, visible_rows, (int)entries.size(), 1, 2);
+        draw_footer(rows, cols, selected, (int)entries.size(), last_scan_ms);
         refresh();
-        draw_help_box(rows, cols, show_help);
         input = getch();
         switch (input) {
             case 'q':
@@ -537,9 +570,6 @@ int main(int argc, char* argv[]) {
                         need_refresh = true;
                     }
                 }
-                break;
-            case 8:
-                show_help = !show_help;
                 break;
             case 'b':
                 if (has_colors()) {

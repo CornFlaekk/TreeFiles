@@ -70,7 +70,7 @@ output=$(run_headless "q")
 check "frame 0 exists"       "$output" "=== FRAME 0 ==="
 check "selected_index: 0"    "$output" "selected_index: 0"
 check "scroll_offset: 0"     "$output" "scroll_offset: 0"
-check "show_help: true"      "$output" "show_help: true"
+check "total_entries listed"  "$output" "total_entries:"
 check "expanded_dirs empty"  "$output" "expanded_dirs: {}"
 check "dir_a listed"         "$output" '\[DIR\]  dir_a'
 check "dir_b listed"         "$output" '\[DIR\]  dir_b'
@@ -156,15 +156,13 @@ check "cancel_delete action" "$output" "cancel_delete"
 echo ""
 
 # ============================================================
-echo "=== Scenario 7: Toggle help ==="
+echo "=== Scenario 7: Header shows current path ==="
 setup
-output=$(run_headless "CTRL_H
-q")
+output=$(run_headless "q")
 
 f0=$(extract_frame "$output" 0)
-check "frame 0 show_help: true" "$f0" "show_help: true"
-f1=$(extract_frame "$output" 1)
-check "frame 1 show_help: false" "$f1" "show_help: false"
+check "frame 0 has current_path" "$f0" "current_path:"
+check "frame 0 path is test dir" "$f0" "/tmp/treefiles_test_integration"
 
 echo ""
 
