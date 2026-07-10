@@ -2,6 +2,7 @@
 #include <ncurses.h>
 #include <ui_utils.h>
 #include <file_utils.h>
+#include "i18n.h"
 #include <filesystem>
 #include <vector>
 #include <string>
@@ -580,7 +581,7 @@ int main(int argc, char* argv[]) {
                         init_pair(2, bar_fg, bar_bg);
                     }
                 } else {
-                    confirm_popup("Colores no soportados en esta terminal.");
+                    confirm_popup(L->term_no_colors);
                 }
                 break;
         }

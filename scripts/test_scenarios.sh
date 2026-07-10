@@ -227,10 +227,10 @@ run_headless_bigdir() {
 setup_bigdir
 output=$(run_headless_bigdir "q")
 f0=$(extract_frame "$output" 0)
-check "nav Siguiente appears for 50 files"     "$f0" "Siguiente"
-check_not "no Anterior on page 0"               "$f0" "Anterior"
+check "nav Next appears for 50 files"     "$f0" "Next"
+check_not "no Previous on page 0"           "$f0" "Previous"
 # 30 files + 1 nav = 31 entries, index 30 is nav
-check "entry index 30 is nav" "$f0" " 30:.*---.*Siguiente"
+check "entry index 30 is nav" "$f0" " 30:.*---.*Next"
 
 # Test n key advances to page 1
 setup_bigdir
@@ -238,9 +238,9 @@ output=$(run_headless_bigdir "n
 q")
 f0=$(extract_frame "$output" 0)
 f1=$(extract_frame "$output" 1)
-check "after n: Anterior present"              "$f1" "Anterior"
-check_not "after n: no Siguiente (last page)"   "$f1" "Siguiente"
-check "after n: selected on first content"      "$f1" "selected_index: 1"
+check "after n: Previous present"          "$f1" "Previous"
+check_not "after n: no Next (last page)"    "$f1" "Next"
+check "after n: selected on first content"  "$f1" "selected_index: 1"
 
 # Test p key returns to page 0
 setup_bigdir
@@ -248,16 +248,16 @@ output=$(run_headless_bigdir "n
 p
 q")
 f2=$(extract_frame "$output" 2)
-check "after p: Siguiente back"                "$f2" "Siguiente"
-check_not "after p: no Anterior"               "$f2" "Anterior"
+check "after p: Next back"                 "$f2" "Next"
+check_not "after p: no Previous"           "$f2" "Previous"
 
 # Test p on page 0 does nothing (no crash)
 setup_bigdir
 output=$(run_headless_bigdir "p
 q")
 f1=$(extract_frame "$output" 1)
-check "p on page 0: still page 0" "$f1" "Siguiente"
-check_not "p on page 0: no Anterior" "$f1" "Anterior"
+check "p on page 0: still page 0" "$f1" "Next"
+check_not "p on page 0: no Previous" "$f1" "Previous"
 
 echo ""
 # ============================================================

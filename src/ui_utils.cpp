@@ -4,6 +4,7 @@
 #include <cstring>
 #include <vector>
 #include "ui_utils.h"
+#include "i18n.h"
 #include <array>
 #include <tuple>
 
@@ -49,7 +50,7 @@ void draw_header(int cols, const std::filesystem::path& current_path, int page, 
     // Right: page info if applicable
     if (total_pages > 1) {
         char buf[32];
-        snprintf(buf, sizeof(buf), "Pag %d/%d", page + 1, total_pages);
+        snprintf(buf, sizeof(buf), L->page_fmt, page + 1, total_pages);
         int right_x = cols - 3 - (int)strlen(buf);
         if (right_x > path_x + 2) {
             mvaddch(0, right_x - 2, ACS_VLINE);
@@ -63,13 +64,26 @@ struct FooterSection {
     std::vector<const char*> bindings;
 };
 
-static const FooterSection sections[] = {
-    {"Navegar",   {"[\u2191\u2193] mover", "[N/P] pag"}},
-    {"Acciones",  {"[E] exp", "[Spc] abrir", "[Del] borrar"}},
-    {"Sistema",   {"[B] color", "[Q] salir"}},
-};
+static std::string keycap(const char* key, const char* action) {
+    return std::string("[") + key + "] " + action;
+}
 
-// Build a flat string of bindings for a section
+static std::vector<FooterSection> build_footer_sections() {
+    static std::string s_move = keycap("\u2191\u2193", L->move);
+    static std::string s_page = keycap("N/P", L->page_abbr);
+    static std::string s_exp  = keycap("E", L->expand);
+    static std::string s_open = keycap("Spc", L->open);
+    static std::string s_del  = keycap("Del", L->delete_);
+    static std::string s_col  = keycap("B", L->color);
+    static std::string s_quit = keycap("Q", L->quit);
+
+    return {
+        {L->nav_section,  {s_move.c_str(), s_page.c_str()}},
+        {L->act_section,  {s_exp.c_str(), s_open.c_str(), s_del.c_str()}},
+        {L->sys_section,  {s_col.c_str(), s_quit.c_str()}},
+    };
+}
+
 static std::string section_bindings(const FooterSection& sec) {
     std::string s;
     for (size_t i = 0; i < sec.bindings.size(); ++i) {
@@ -80,14 +94,12 @@ static std::string section_bindings(const FooterSection& sec) {
 }
 
 static int count_content_lines(int cols) {
-    if (cols > 80) return 2; // wide: headers + bindings
-
-    // Narrow: one line per section (+ wrapping if needed)
+    if (cols > 80) return 2;
+    auto secs = build_footer_sections();
     int lines = 0;
-    for (auto& sec : sections) {
+    for (auto& sec : secs) {
         std::string line = sec.name + std::string(": ");
         line += section_bindings(sec);
-        // Wrap if too long
         int max_w = cols - 4;
         lines++;
         int remaining = (int)line.size() - max_w;
@@ -100,17 +112,17 @@ static int count_content_lines(int cols) {
 }
 
 int footer_height(int cols) {
-    return count_content_lines(cols) + 2; // content + separator + bottom
+    return count_content_lines(cols) + 2;
 }
 
 void draw_footer(int rows, int cols, int selected, int total_entries, double last_scan_ms) {
     int content_lines = count_content_lines(cols);
     int footer_start = rows - 2 - content_lines;
+    auto secs = build_footer_sections();
 
     // Top separator
     draw_horizontal_line(footer_start, 0, cols - 1, ACS_LTEE, ACS_HLINE, ACS_RTEE);
 
-    // Right info string (embedded in bottom border later)
     char right_buf[64];
     std::string scan_str = format_scan_time(last_scan_ms);
     if (total_entries > 0) {
@@ -133,7 +145,7 @@ void draw_footer(int rows, int cols, int selected, int total_entries, double las
             int col = 2 + s * (sect_w + 1);
 
             attron(A_BOLD);
-            mvaddstr(row1, col, sections[s].name);
+            mvaddstr(row1, col, secs[s].name);
             attroff(A_BOLD);
 
             if (s < 2) {
@@ -141,7 +153,7 @@ void draw_footer(int rows, int cols, int selected, int total_entries, double las
                 mvaddch(row1, mid, ACS_VLINE);
             }
 
-            mvaddstr(row2, col, section_bindings(sections[s]).c_str());
+            mvaddstr(row2, col, section_bindings(secs[s]).c_str());
             if (s < 2) {
                 int mid = col + sect_w;
                 mvaddch(row2, mid, ACS_VLINE);
@@ -149,7 +161,7 @@ void draw_footer(int rows, int cols, int selected, int total_entries, double las
         }
     } else {
         int row = footer_start + 1;
-        for (auto& sec : sections) {
+        for (auto& sec : secs) {
             mvaddch(row, 0, ACS_VLINE);
             mvaddch(row, cols - 1, ACS_VLINE);
 
@@ -177,7 +189,6 @@ void draw_footer(int rows, int cols, int selected, int total_entries, double las
         }
     }
 
-    // Bottom border with embedded scan/position info
     int right_w = (int)strlen(right_buf);
     int right_x = cols - 2 - right_w;
     if (right_x < 2) right_x = 2;
@@ -395,9 +406,6 @@ bool confirm_popup(const std::string& message) {
 }
 
 std::pair<int, int> bar_color_selection_popup() {
-    static const std::array<const char*, 8> color_names = {
-        "Negro", "Rojo", "Verde", "Amarillo", "Azul", "Magenta", "Cyan", "Blanco"
-    };
     int selected_bg = 0;
     int selected_fg = 0;
     int rows, cols;
@@ -410,42 +418,42 @@ std::pair<int, int> bar_color_selection_popup() {
     keypad(win, TRUE);
 
     box(win, 0, 0);
-    mvwprintw(win, 1, 2, "Color de FONDO barra:");
+    mvwprintw(win, 1, 2, "%s", L->bar_bg_color);
     while (true) {
-        for (int i = 0; i < (int)color_names.size(); ++i) {
+        for (int i = 0; i < 8; ++i) {
             if (i == selected_bg) {
                 wattron(win, A_REVERSE);
-                mvwprintw(win, 3 + i, 4, "%s", color_names[i]);
+                mvwprintw(win, 3 + i, 4, "%s", L->col_names[i]);
                 wattroff(win, A_REVERSE);
             } else {
-                mvwprintw(win, 3 + i, 4, "%s", color_names[i]);
+                mvwprintw(win, 3 + i, 4, "%s", L->col_names[i]);
             }
         }
         wrefresh(win);
         int ch = wgetch(win);
         if (ch == KEY_UP && selected_bg > 0) selected_bg--;
-        else if (ch == KEY_DOWN && selected_bg < (int)color_names.size() - 1) selected_bg++;
+        else if (ch == KEY_DOWN && selected_bg < 7) selected_bg++;
         else if (ch == '\n' || ch == KEY_ENTER) break;
         else if (ch == 27) { delwin(win); touchwin(stdscr); refresh(); return {-1, -1}; }
     }
 
     werase(win);
     box(win, 0, 0);
-    mvwprintw(win, 1, 2, "Color de TEXTO barra:");
+    mvwprintw(win, 1, 2, "%s", L->bar_fg_color);
     while (true) {
-        for (int i = 0; i < (int)color_names.size(); ++i) {
+        for (int i = 0; i < 8; ++i) {
             if (i == selected_fg) {
                 wattron(win, A_REVERSE);
-                mvwprintw(win, 3 + i, 4, "%s", color_names[i]);
+                mvwprintw(win, 3 + i, 4, "%s", L->col_names[i]);
                 wattroff(win, A_REVERSE);
             } else {
-                mvwprintw(win, 3 + i, 4, "%s", color_names[i]);
+                mvwprintw(win, 3 + i, 4, "%s", L->col_names[i]);
             }
         }
         wrefresh(win);
         int ch = wgetch(win);
         if (ch == KEY_UP && selected_fg > 0) selected_fg--;
-        else if (ch == KEY_DOWN && selected_fg < (int)color_names.size() - 1) selected_fg++;
+        else if (ch == KEY_DOWN && selected_fg < 7) selected_fg++;
         else if (ch == '\n' || ch == KEY_ENTER) break;
         else if (ch == 27) { delwin(win); touchwin(stdscr); refresh(); return {-1, -1}; }
     }

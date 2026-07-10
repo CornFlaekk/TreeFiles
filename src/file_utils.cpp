@@ -1,4 +1,5 @@
 #include "file_utils.h"
+#include "i18n.h"
 #include <sstream>
 #include <iomanip>
 #include <algorithm>
@@ -113,7 +114,7 @@ void build_tree_entries(const std::filesystem::path& path,
 
     // Botón retroceder página si no estamos en la primera
     if (total_pages > 1 && page > 0) {
-        std::string label = "\u25c2\u25c2 Anterior (" + std::to_string(page + 1) + "/" + std::to_string(total_pages) + ")";
+        std::string label = L->prev_label + std::to_string(page + 1) + "/" + std::to_string(total_pages) + ")";
         out.push_back({"[RESTO_PREV]", label, path, 0, depth, false});
     }
 
@@ -127,7 +128,7 @@ void build_tree_entries(const std::filesystem::path& path,
 
     // Botón avanzar página si hay más
     if (total_pages > 1 && page < total_pages - 1) {
-        std::string label = "\u25b8\u25b8 Siguiente (" + std::to_string(page + 1) + "/" + std::to_string(total_pages) + ")";
+        std::string label = L->next_label + std::to_string(page + 1) + "/" + std::to_string(total_pages) + ")";
         out.push_back({"[RESTO_NEXT]", label, path, 0, depth, false});
     }
 }
