@@ -290,6 +290,27 @@ void reset_resto(const fs::path& path) { resto_state.resto_page[path] = 0; }
 void reset_resto_state() { resto_state.resto_page.clear(); }
 void clear_tree_entries_cache() { reset_resto_state(); }
 
+static bool keep_directory_state(const fs::path& path) {
+    std::error_code error;
+    const auto status = fs::symlink_status(path, error);
+    if (error) {
+        return error != std::errc::no_such_file_or_directory &&
+               error != std::errc::not_a_directory;
+    }
+    return fs::is_directory(status) && !fs::is_symlink(status) && !is_directory_link(path);
+}
+
+void prune_tree_state(std::set<fs::path>& expanded_dirs) {
+    for (auto it = expanded_dirs.begin(); it != expanded_dirs.end();) {
+        if (!keep_directory_state(*it)) it = expanded_dirs.erase(it);
+        else ++it;
+    }
+    for (auto it = resto_state.resto_page.begin(); it != resto_state.resto_page.end();) {
+        if (!keep_directory_state(it->first)) it = resto_state.resto_page.erase(it);
+        else ++it;
+    }
+}
+
 int get_current_page(const fs::path& path) {
     auto it = resto_state.resto_page.find(path);
     return it != resto_state.resto_page.end() ? it->second : 0;

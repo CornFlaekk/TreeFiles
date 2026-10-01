@@ -159,6 +159,7 @@ are included in directory totals.
 | `g` / `G` | Select the first / last row of the current tree |
 | `E` | Toggle directory expansion or activate a pagination row |
 | `N` / `P` | Next / previous page of the selected directory |
+| `R` | Re-scan the current root and update cached sizes |
 | Space | Open with the system's default application |
 | Delete | Delete the selected file or directory after confirmation |
 | `B` | Choose the bar's background and text colors |
@@ -219,7 +220,7 @@ $env:TREEFILES_CONFIG = "$PWD\colors.ini"
 ### Headless use and tests
 
 Pipe one event per line. Arrow events use `UP`, `DOWN`, `LEFT` and `RIGHT`;
-`SPACE`, `DELETE` and `ENTER` represent those keys. Letter shortcuts work as
+`SPACE`, `DELETE`, `ENTER` and `REFRESH` represent those actions. Letter shortcuts work as
 in the interactive interface. `COLOR foreground background` applies and saves
 colors; `B` only logs the available choices in headless mode.
 

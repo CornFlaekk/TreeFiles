@@ -53,6 +53,16 @@ extract_frame() {
     echo "$output" | awk "/=== FRAME $num ===/,/=== END FRAME ===/"
 }
 
+read_frame_from_fd() {
+    local input_fd="$1" line
+    LAST_FRAME=""
+    while IFS= read -r -u "$input_fd" line; do
+        LAST_FRAME+="${line}"$'\n'
+        if [[ "$line" == "=== END FRAME ===" ]]; then return 0; fi
+    done
+    return 1
+}
+
 run_headless() {
     local events="$1"
     shift
@@ -361,7 +371,66 @@ output=$(printf 'j\nk\nh\nl\ng\nG\nq\n' | "$BINARY" --headless "$TEST_DIR/empty"
 check "Vim keys are safe on empty directory" "$(extract_frame "$output" 7)" 'total_entries: 0'
 
 echo ""
-echo "=== Scenario 15: Language selection ==="
+echo "=== Scenario 15: Refresh external changes ==="
+refresh_root="$TEST_DIR/refresh-root"
+mkdir -p "$refresh_root/sub"
+printf x > "$refresh_root/a.txt"
+printf xx > "$refresh_root/b.txt"
+printf x > "$refresh_root/sub/deep.txt"
+coproc REFRESH_PROC { "$BINARY" --headless "$refresh_root"; }
+read_frame_from_fd "${REFRESH_PROC[0]}"
+printf 'DOWN\n' >&"${REFRESH_PROC[1]}"
+read_frame_from_fd "${REFRESH_PROC[0]}"
+printf 'DOWN\n' >&"${REFRESH_PROC[1]}"
+read_frame_from_fd "${REFRESH_PROC[0]}"
+printf 'e\n' >&"${REFRESH_PROC[1]}"
+read_frame_from_fd "${REFRESH_PROC[0]}"
+printf 'UP\n' >&"${REFRESH_PROC[1]}"
+read_frame_from_fd "${REFRESH_PROC[0]}"
+printf 'abcdefghijkl' > "$refresh_root/a.txt"
+printf '12345678901234567890' > "$refresh_root/sub/deep.txt"
+printf '123456' > "$refresh_root/added.txt"
+mv "$refresh_root/b.txt" "$refresh_root/renamed.txt"
+printf 'REFRESH\n' >&"${REFRESH_PROC[1]}"
+read_frame_from_fd "${REFRESH_PROC[0]}"
+refresh_frame="$LAST_FRAME"
+check "refresh preserves valid expanded directories" "$refresh_frame" 'deep.txt'
+check "refresh sees external create and rename" "$refresh_frame" 'added.txt'
+check "refresh removes externally renamed old path" "$refresh_frame" 'renamed.txt'
+check_not "refresh removes the old name" "$refresh_frame" 'b.txt'
+check "refresh restores selection by path after reordering" "$refresh_frame" ' 2: >>> \[FILE\] a.txt'
+rm "$refresh_root/added.txt"
+printf 'r\n' >&"${REFRESH_PROC[1]}"
+read_frame_from_fd "${REFRESH_PROC[0]}"
+check_not "refresh sees external deletion" "$LAST_FRAME" 'added.txt'
+check "refresh keeps a valid selection after deletion" "$LAST_FRAME" 'a.txt'
+printf 'q\n' >&"${REFRESH_PROC[1]}"
+read_frame_from_fd "${REFRESH_PROC[0]}"
+wait "$REFRESH_PROC_PID"
+check "refresh session exits cleanly" "$?" '^0$'
+
+page_root="$TEST_DIR/refresh-pages"
+mkdir -p "$page_root"
+for name in one.txt two.txt three.txt; do printf x > "$page_root/$name"; done
+coproc PAGE_PROC { "$BINARY" --headless --page-size 1 "$page_root"; }
+read_frame_from_fd "${PAGE_PROC[0]}"
+printf 'n\n' >&"${PAGE_PROC[1]}"
+read_frame_from_fd "${PAGE_PROC[0]}"
+printf 'n\n' >&"${PAGE_PROC[1]}"
+read_frame_from_fd "${PAGE_PROC[0]}"
+rm "$page_root/two.txt" "$page_root/three.txt"
+printf 'R\n' >&"${PAGE_PROC[1]}"
+read_frame_from_fd "${PAGE_PROC[0]}"
+check_not "refresh removes stale Previous marker" "$LAST_FRAME" 'Previous'
+check_not "refresh removes stale Next marker" "$LAST_FRAME" 'Next'
+check "refresh clamps a deleted last-page selection" "$LAST_FRAME" 'selected_index: 0'
+printf 'q\n' >&"${PAGE_PROC[1]}"
+read_frame_from_fd "${PAGE_PROC[0]}"
+wait "$PAGE_PROC_PID"
+check "last-page refresh session exits cleanly" "$?" '^0$'
+
+echo ""
+echo "=== Scenario 16: Language selection ==="
 setup_bigdir
 output=$(run_headless_bigdir "q")
 check "English is the default language" "$(extract_frame "$output" 0)" 'language: en'

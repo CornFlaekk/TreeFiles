@@ -54,6 +54,7 @@ ScanResult scan_tree_entries(const std::filesystem::path& path,
 
 void clear_dir_size_cache();
 void clear_tree_entries_cache();
+void prune_tree_state(std::set<std::filesystem::path>& expanded_dirs);
 void expand_resto(const std::filesystem::path& path);
 void prev_resto(const std::filesystem::path& path);
 void reset_resto_state();

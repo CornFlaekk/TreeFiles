@@ -20,6 +20,7 @@
 #include <atomic>
 #include <charconv>
 #include <array>
+#include <algorithm>
 
 static short curses_color(int index) {
     // PDCurses and ncurses assign different numeric values to the same colors.
@@ -153,6 +154,7 @@ static int parse_headless_event(const std::string& line) {
     if (line == "DELETE")      return KEY_DC;
     if (line == "CTRL_H")      return 8;
     if (line == "ENTER")       return '\n';
+    if (line == "REFRESH")     return 0x10001;
     if (line.rfind("COLOR ", 0) == 0) return 0x10000;
     if (line.size() == 1)      return line[0];
     return -1;
@@ -228,6 +230,47 @@ static bool collapse_selected_directory(const std::vector<EntryInfo>& entries, i
         }
     }
     return false;
+}
+
+static ScanResult rebuild_tree_preserving_selection(
+    const std::filesystem::path& current_path,
+    std::set<std::filesystem::path>& expanded_dirs,
+    int page_size,
+    std::vector<EntryInfo>& entries,
+    int& selected,
+    bool invalidate_sizes) {
+    std::filesystem::path selected_path;
+    if (invalidate_sizes && selected >= 0 && selected < static_cast<int>(entries.size()) &&
+        entries[selected].type != "[RESTO_NEXT]" && entries[selected].type != "[RESTO_PREV]")
+        selected_path = entries[selected].full_path;
+
+    if (invalidate_sizes) {
+        clear_dir_size_cache();
+        prune_tree_state(expanded_dirs);
+    }
+    auto result = scan_tree_entries(current_path, expanded_dirs, page_size);
+    entries = result.entries;
+    if (invalidate_sizes && !selected_path.empty()) {
+        auto restored = std::find_if(entries.begin(), entries.end(), [&](const EntryInfo& entry) {
+            return entry.full_path == selected_path &&
+                   entry.type != "[RESTO_NEXT]" && entry.type != "[RESTO_PREV]";
+        });
+        if (restored != entries.end()) selected = static_cast<int>(restored - entries.begin());
+    }
+    if (invalidate_sizes) {
+        int nearest = -1;
+        int nearest_distance = static_cast<int>(entries.size()) + 1;
+        for (int index = 0; index < static_cast<int>(entries.size()); ++index) {
+            if (entries[index].type == "[RESTO_NEXT]" || entries[index].type == "[RESTO_PREV]") continue;
+            const int distance = index > selected ? index - selected : selected - index;
+            if (distance < nearest_distance) {
+                nearest = index;
+                nearest_distance = distance;
+            }
+        }
+        selected = nearest >= 0 ? nearest : 0;
+    }
+    return result;
 }
 
 int main(int argc, char* argv[]) {
@@ -326,14 +369,15 @@ int main(int argc, char* argv[]) {
 
         std::vector<EntryInfo> entries;
         bool need_refresh = true;
+        bool refresh_next_scan = false;
         std::filesystem::path select_first_owner;
         std::filesystem::path select_last_owner;
         int frame_num = 0;
 
-        auto rebuild_tree = [&]() {
+        auto rebuild_tree = [&](bool invalidate_sizes = false) {
             auto t0 = std::chrono::high_resolution_clock::now();
-            scan_result = scan_tree_entries(current_path, expanded_dirs, page_size);
-            entries = scan_result.entries;
+            scan_result = rebuild_tree_preserving_selection(current_path, expanded_dirs,
+                page_size, entries, selected, invalidate_sizes);
             auto t1 = std::chrono::high_resolution_clock::now();
             last_scan_ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
             need_refresh = false;
@@ -380,7 +424,8 @@ int main(int argc, char* argv[]) {
                 continue;
 
             if (need_refresh)
-                rebuild_tree();
+                rebuild_tree(refresh_next_scan);
+            refresh_next_scan = false;
             if (scan_result.status == ScanStatus::failed) {
                 std::cerr << text(Text::UnreadableDirectory) << current_path.u8string() << std::endl;
                 for (const auto& issue : scan_result.diagnostics)
@@ -394,6 +439,12 @@ int main(int argc, char* argv[]) {
             case 'q':
             case 'Q':
                 running = false;
+                break;
+            case 'r':
+            case 'R':
+            case 0x10001:
+                need_refresh = true;
+                refresh_next_scan = true;
                 break;
             case KEY_UP:
             case 'k':
@@ -495,7 +546,6 @@ int main(int argc, char* argv[]) {
                             } else {
                                 std::filesystem::remove(entry.full_path);
                             }
-                            clear_dir_size_cache();
                             std::cout << "=== ACTION deleted ===" << std::endl;
                             std::cout << "path: " << entry.full_path.u8string() << std::endl;
                             std::cout << "=== END ACTION ===" << std::endl;
@@ -505,6 +555,7 @@ int main(int argc, char* argv[]) {
                             std::cout << "=== END POPUP ===" << std::endl;
                         }
                         need_refresh = true;
+                        refresh_next_scan = true;
                     } else {
                         std::cout << "=== ACTION cancel_delete ===" << std::endl;
                         std::cout << "=== END ACTION ===" << std::endl;
@@ -555,7 +606,8 @@ int main(int argc, char* argv[]) {
 
             if (!popup_handled || need_refresh) {
                 if (need_refresh)
-                    rebuild_tree();
+                    rebuild_tree(refresh_next_scan);
+                refresh_next_scan = false;
                 clamp_and_skip_selection(entries, selected, select_first_owner, select_last_owner);
                 update_scroll(selected, scroll_offset, visible_rows);
                 int tp = 1, cp = 0;
@@ -611,6 +663,7 @@ int main(int argc, char* argv[]) {
 
     std::vector<EntryInfo> entries;
     bool need_refresh = true;
+    bool refresh_next_scan = false;
     std::filesystem::path select_first_owner;
     std::filesystem::path select_last_owner;
     while (running) {
@@ -624,7 +677,8 @@ int main(int argc, char* argv[]) {
             std::thread loader([&]() {
                 auto t0 = std::chrono::high_resolution_clock::now();
                 try {
-                    scan_result = scan_tree_entries(current_path, expanded_dirs, page_size);
+                    scan_result = rebuild_tree_preserving_selection(current_path, expanded_dirs,
+                        page_size, entries, selected, refresh_next_scan);
                 } catch (const std::filesystem::filesystem_error& ex) {
                     scan_result.status = ScanStatus::failed;
                     scan_result.diagnostics.push_back({ex.path1(), "scan", ex.code()});
@@ -657,6 +711,7 @@ int main(int argc, char* argv[]) {
                 std::this_thread::sleep_for(std::chrono::milliseconds(80));
             }
             need_refresh = false;
+            refresh_next_scan = false;
             if (scan_result.status == ScanStatus::failed)
                 show_scan_diagnostics(scan_result);
         }
@@ -688,6 +743,11 @@ int main(int argc, char* argv[]) {
             case 'q':
             case 'Q':
                 running = false;
+                break;
+            case 'r':
+            case 'R':
+                need_refresh = true;
+                refresh_next_scan = true;
                 break;
             case KEY_UP:
             case 'k':
@@ -781,11 +841,11 @@ int main(int argc, char* argv[]) {
                             } else {
                                 std::filesystem::remove(entry.full_path);
                             }
-                            clear_dir_size_cache();
                         } catch (const std::exception& ex) {
                             confirm_popup(std::string(text(Text::Error)) + ": " + ex.what());
                         }
                         need_refresh = true;
+                        refresh_next_scan = true;
                     }
                 }
                 break;

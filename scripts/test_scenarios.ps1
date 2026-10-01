@@ -55,6 +55,17 @@ function Frame([string]$Output, [int]$Number) {
     return $match.Groups[1].Value
 }
 
+function Read-NextFrame([System.Diagnostics.Process]$Process) {
+    $lines = New-Object 'System.Collections.Generic.List[string]'
+    while ($true) {
+        $line = $Process.StandardOutput.ReadLine()
+        if ($null -eq $line) { throw 'TreeFiles exited before completing a frame.' }
+        $lines.Add($line)
+        if ($line -eq '=== END FRAME ===') { break }
+    }
+    return ($lines -join "`n")
+}
+
 try {
     # Keep every created/deleted file under one unique, owned fixture directory.
     New-Item -ItemType Directory -Path (Join-Path $testRoot 'dir_a/sub') -Force | Out-Null
@@ -183,6 +194,100 @@ try {
     New-Item -ItemType Directory -Path $emptyDirectory | Out-Null
     $output = Run-Headless @('j', 'k', 'h', 'l', 'g', 'G', 'q') $emptyDirectory
     Check ((Frame $output 7).Contains('total_entries: 0')) 'Vim shortcuts are safe on an empty directory'
+
+    $refreshRoot = Join-Path $testRoot 'refresh-root'
+    New-Item -ItemType Directory -Path (Join-Path $refreshRoot 'sub') -Force | Out-Null
+    Write-TestFile (Join-Path $refreshRoot 'a.txt') 1
+    Write-TestFile (Join-Path $refreshRoot 'b.txt') 2
+    Write-TestFile (Join-Path $refreshRoot 'sub/deep.txt') 1
+    $refreshInfo = New-Object System.Diagnostics.ProcessStartInfo
+    $refreshInfo.FileName = $Binary
+    $refreshInfo.Arguments = '--headless "' + $refreshRoot + '"'
+    $refreshInfo.UseShellExecute = $false
+    $refreshInfo.CreateNoWindow = $true
+    $refreshInfo.RedirectStandardInput = $true
+    $refreshInfo.RedirectStandardOutput = $true
+    $refreshInfo.RedirectStandardError = $true
+    $refreshProcess = New-Object System.Diagnostics.Process
+    $refreshProcess.StartInfo = $refreshInfo
+    try {
+        [void]$refreshProcess.Start()
+        [void](Read-NextFrame $refreshProcess)
+        $refreshProcess.StandardInput.WriteLine('DOWN')
+        [void]$refreshProcess.StandardInput.Flush()
+        [void](Read-NextFrame $refreshProcess)
+        $refreshProcess.StandardInput.WriteLine('DOWN')
+        $refreshProcess.StandardInput.Flush()
+        [void](Read-NextFrame $refreshProcess)
+        $refreshProcess.StandardInput.WriteLine('e')
+        $refreshProcess.StandardInput.Flush()
+        [void](Read-NextFrame $refreshProcess)
+        $refreshProcess.StandardInput.WriteLine('UP')
+        $refreshProcess.StandardInput.Flush()
+        [void](Read-NextFrame $refreshProcess)
+
+        Write-TestFile (Join-Path $refreshRoot 'a.txt') 12
+        Write-TestFile (Join-Path $refreshRoot 'sub/deep.txt') 20
+        Write-TestFile (Join-Path $refreshRoot 'added.txt') 6
+        Move-Item -LiteralPath (Join-Path $refreshRoot 'b.txt') -Destination (Join-Path $refreshRoot 'renamed.txt')
+        $refreshProcess.StandardInput.WriteLine('REFRESH')
+        $refreshProcess.StandardInput.Flush()
+        $refreshFrame = Read-NextFrame $refreshProcess
+        Check ($refreshFrame.Contains('deep.txt')) 'refresh preserves valid expanded directories'
+        Check ($refreshFrame.Contains('added.txt') -and $refreshFrame.Contains('renamed.txt') -and -not $refreshFrame.Contains('b.txt')) 'refresh sees external create and rename'
+        Check ($refreshFrame.Contains(' 2: >>> [FILE] a.txt')) 'refresh restores selection by path after reordering'
+
+        Remove-Item -LiteralPath (Join-Path $refreshRoot 'added.txt')
+        $refreshProcess.StandardInput.WriteLine('r')
+        $refreshProcess.StandardInput.Flush()
+        $deleteFrame = Read-NextFrame $refreshProcess
+        Check (-not $deleteFrame.Contains('added.txt')) 'refresh sees external deletion'
+        Check ($deleteFrame.Contains('a.txt')) 'refresh keeps a valid selection after deletion'
+        $refreshProcess.StandardInput.WriteLine('q')
+        $refreshProcess.StandardInput.Flush()
+        $refreshProcess.StandardInput.Close()
+        $refreshProcess.WaitForExit()
+        Check ($refreshProcess.ExitCode -eq 0) 'refresh session exits cleanly'
+    } finally {
+        $refreshProcess.Dispose()
+    }
+
+    $pageRoot = Join-Path $testRoot 'refresh-pages'
+    New-Item -ItemType Directory -Path $pageRoot -Force | Out-Null
+    foreach ($name in @('one.txt', 'two.txt', 'three.txt')) { Write-TestFile (Join-Path $pageRoot $name) 1 }
+    $pageInfo = New-Object System.Diagnostics.ProcessStartInfo
+    $pageInfo.FileName = $Binary
+    $pageInfo.Arguments = '--headless --page-size 1 "' + $pageRoot + '"'
+    $pageInfo.UseShellExecute = $false
+    $pageInfo.CreateNoWindow = $true
+    $pageInfo.RedirectStandardInput = $true
+    $pageInfo.RedirectStandardOutput = $true
+    $pageInfo.RedirectStandardError = $true
+    $pageProcess = New-Object System.Diagnostics.Process
+    $pageProcess.StartInfo = $pageInfo
+    try {
+        [void]$pageProcess.Start()
+        [void](Read-NextFrame $pageProcess)
+        foreach ($page in 1..2) {
+            $pageProcess.StandardInput.WriteLine('n')
+            $pageProcess.StandardInput.Flush()
+            [void](Read-NextFrame $pageProcess)
+        }
+        Remove-Item -LiteralPath (Join-Path $pageRoot 'two.txt')
+        Remove-Item -LiteralPath (Join-Path $pageRoot 'three.txt')
+        $pageProcess.StandardInput.WriteLine('R')
+        $pageProcess.StandardInput.Flush()
+        $pageFrame = Read-NextFrame $pageProcess
+        Check (-not $pageFrame.Contains('Previous') -and -not $pageFrame.Contains('Next')) 'refresh removes stale pagination rows'
+        Check ($pageFrame.Contains('selected_index: 0')) 'refresh clamps a deleted last-page selection'
+        $pageProcess.StandardInput.WriteLine('q')
+        $pageProcess.StandardInput.Flush()
+        $pageProcess.StandardInput.Close()
+        $pageProcess.WaitForExit()
+        Check ($pageProcess.ExitCode -eq 0) 'last-page refresh session exits cleanly'
+    } finally {
+        $pageProcess.Dispose()
+    }
 
     $output = Run-Headless @('q') $bigDirectory
     Check ((Frame $output 0).Contains('language: en')) 'English is the default interface language'

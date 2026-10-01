@@ -108,6 +108,7 @@ Each line is one event:
 | `y` | y/Y | Confirm popup |
 | `n` | n/N | Cancel popup |
 | `ENTER` | Enter | Confirm popup (same as `y`) |
+| `r` / `R` / `REFRESH` | Refresh | Clear cached sizes and rescan the current root |
 | `COLOR red blue` | Color setting | Save foreground/background using canonical English names |
 | `w` / `W` | Warnings | Show scan diagnostics (interactive); headless prints a diagnostic popup record |
 

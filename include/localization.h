@@ -10,6 +10,7 @@ enum class Text {
     UnknownOption, UsageHint, UnreadableDirectory, ConfigLoadWarning, ConfigSaveWarning,
     OpenPathError, OpenCommandError, Bytes, InvalidColorEvent,
     WarningsBinding, ScanWarnings, ScanDiagnostics, PressAnyKey, SizePartial, SizeUnavailable,
+    RefreshBinding,
     Count
 };
 

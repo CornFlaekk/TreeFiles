@@ -68,7 +68,7 @@ struct FooterSection {
 static const FooterSection sections[] = {
     {Text::Navigation, {Text::MoveBinding, Text::PageBinding}},
     {Text::Actions, {Text::ExpandBinding, Text::OpenBinding, Text::DeleteBinding}},
-    {Text::System, {Text::ColorBinding, Text::WarningsBinding, Text::QuitBinding}},
+    {Text::System, {Text::ColorBinding, Text::WarningsBinding, Text::RefreshBinding, Text::QuitBinding}},
 };
 
 // Build a flat string of bindings for a section

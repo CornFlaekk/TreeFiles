@@ -24,7 +24,7 @@ const std::array<const char*, text_count> english = {
     "Cannot read color settings: ", "Cannot save color settings: ",
     "Cannot open this path", "Cannot run xdg-open: ", "bytes", "Invalid COLOR event.",
     "[W] warnings", "Scan completed with omitted items", "Scan diagnostics", "Press any key",
-    "partial", "unavailable"
+    "partial", "unavailable", "[R] refresh"
 };
 const std::array<const char*, text_count> spanish_text = {
     "Anterior", "Siguiente", "Pag", "Navegar", "Acciones", "Sistema",
@@ -45,7 +45,7 @@ const std::array<const char*, text_count> spanish_text = {
     "No se pueden leer los colores guardados: ", "No se pueden guardar los colores: ",
     "No se puede abrir esta ruta", "No se puede ejecutar xdg-open: ", "bytes", "Evento COLOR no v\u00e1lido.",
     "[W] avisos", "Escaneo terminado con elementos omitidos", "Diagn\u00f3sticos del escaneo", "Pulsa cualquier tecla",
-    "parcial", "no disponible"
+    "parcial", "no disponible", "[R] actualizar"
 };
 }
 
