@@ -6,6 +6,7 @@
 #include <map>
 #include <unordered_map>
 #include <mutex>
+#include <stdexcept>
 
 std::string human_readable_size(std::uintmax_t bytes) {
     const char* sizes[] = {"bytes", "KB", "MB", "GB", "TB"};
@@ -78,6 +79,9 @@ void build_tree_entries(const std::filesystem::path& path,
                         int depth,
                         int max_files) {
     namespace fs = std::filesystem;
+    if (max_files <= 0) {
+        throw std::invalid_argument("Page size must be positive.");
+    }
     std::vector<EntryInfo> all_entries;
     for (const auto& entry : fs::directory_iterator(path)) {
         if (entry.is_directory()) {
@@ -95,21 +99,19 @@ void build_tree_entries(const std::filesystem::path& path,
         return a.name < b.name;
     });
 
-    int total_pages = ((int)all_entries.size() + max_files - 1) / max_files;
+    const size_t page_capacity = static_cast<size_t>(max_files);
+    size_t total_pages = all_entries.size() / page_capacity
+                       + (all_entries.size() % page_capacity != 0);
     if (total_pages == 0) total_pages = 1;
 
     int page = resto_state.resto_page[path];
-    if (page >= total_pages) {
-        page = 0;
-        resto_state.resto_page[path] = 0;
-    }
-    if (page < 0) {
+    if (page < 0 || static_cast<size_t>(page) >= total_pages) {
         page = 0;
         resto_state.resto_page[path] = 0;
     }
 
-    int start_idx = page * max_files;
-    int end_idx = std::min((int)all_entries.size(), start_idx + max_files);
+    const size_t start_idx = static_cast<size_t>(page) * page_capacity;
+    const size_t end_idx = start_idx + std::min(page_capacity, all_entries.size() - start_idx);
 
     // Botón retroceder página si no estamos en la primera
     if (total_pages > 1 && page > 0) {
@@ -118,7 +120,7 @@ void build_tree_entries(const std::filesystem::path& path,
     }
 
     // Añade los elementos de la página actual
-    for (int i = start_idx; i < end_idx; ++i) {
+    for (size_t i = start_idx; i < end_idx; ++i) {
         out.push_back(all_entries[i]);
         if (all_entries[i].type == "[DIR] " && all_entries[i].expanded) {
             build_tree_entries(all_entries[i].full_path, expanded_dirs, out, depth + 1, max_files);
@@ -126,7 +128,7 @@ void build_tree_entries(const std::filesystem::path& path,
     }
 
     // Botón avanzar página si hay más
-    if (total_pages > 1 && page < total_pages - 1) {
+    if (static_cast<size_t>(page) + 1 < total_pages) {
         std::string label = "\u25b8\u25b8 Siguiente (" + std::to_string(page + 1) + "/" + std::to_string(total_pages) + ")";
         out.push_back({"[RESTO_NEXT]", label, path, 0, depth, false});
     }

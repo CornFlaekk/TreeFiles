@@ -120,6 +120,7 @@ message: Delete "foo.txt"?
 
 Each frame contains:
 - `current_path`, `selected_index`, `scroll_offset`, `visible_rows`
+- `page_size` (default 30; configured with `--page-size N` in either mode)
 - `show_help` (true/false)
 - `expanded_dirs` set
 - `last_scan_ms`, `bar_fg`, `bar_bg`

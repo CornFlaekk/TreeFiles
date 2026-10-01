@@ -79,6 +79,21 @@ Quote paths containing spaces. Use the arrows to select, `E` to expand/collapse,
 Headless mode logs opening actions without launching external applications.
 Confirmed deletion still removes the selected file or directory.
 
+Use `--page-size N` (or `--page-size=N`) to configure the number of files and
+directories per page. The default is 30; `N` must be a positive integer up to
+2147483647. The limit applies independently to every directory, including
+expanded subdirectories. Previous/next navigation rows do not count toward it.
+This option works in both interactive and headless mode. Use `--help` for usage.
+
+```powershell
+.\build\windows-debug\treefiles.exe --page-size 10 .
+'n', 'p', 'q' | .\build\windows-debug\treefiles.exe --headless --page-size 10 .
+```
+
+```bash
+./build/linux-debug/treefiles --page-size 10 .
+```
+
 ## Releases
 
 GitHub Actions builds and tests Windows x64 and Linux x64 on pushes and pull

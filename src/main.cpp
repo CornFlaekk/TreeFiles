@@ -15,6 +15,8 @@
 #include <chrono>
 #include <thread>
 #include <atomic>
+#include <charconv>
+#include <limits>
 
 static void headless_dump_frame(const std::vector<EntryInfo>& entries, int selected,
                                 int scroll_offset, int visible_rows,
@@ -22,12 +24,13 @@ static void headless_dump_frame(const std::vector<EntryInfo>& entries, int selec
                                 const std::set<std::filesystem::path>& expanded_dirs,
                                 double last_scan_ms,
                                 int bar_fg, int bar_bg, int frame_num,
-                                int total_pages, int current_page) {
+                                int total_pages, int current_page, int page_size) {
     std::cout << "=== FRAME " << frame_num << " ===" << std::endl;
     std::cout << "current_path: " << current_path.u8string() << std::endl;
     std::cout << "selected_index: " << selected << std::endl;
     std::cout << "scroll_offset: " << scroll_offset << std::endl;
     std::cout << "visible_rows: " << visible_rows << std::endl;
+    std::cout << "page_size: " << page_size << std::endl;
     std::cout << "total_entries: " << entries.size() << std::endl;
     if (total_pages > 1) {
         std::cout << "pagination: page " << (current_page + 1) << " of " << total_pages << std::endl;
@@ -174,13 +177,42 @@ static void update_scroll(int selected, int& scroll_offset, int visible_rows) {
 int main(int argc, char* argv[]) {
     ConsoleEncoding console_encoding;
     bool headless = false;
+    int page_size = 30;
     std::filesystem::path start_path = ".";
 
-    for (const auto& arg : command_line_arguments(argc, argv)) {
+    const auto arguments = command_line_arguments(argc, argv);
+    for (size_t i = 0; i < arguments.size(); ++i) {
+        const auto& arg = arguments[i];
         if (arg == "--headless") {
             headless = true;
+        } else if (arg == "--help" || arg == "-h") {
+            std::cout << "Usage: treefiles [--headless] [--page-size N] [directory]\n"
+                         "  --page-size N  Entries per directory page (default: 30).\n"
+                         "                 N must be a positive integer up to "
+                      << std::numeric_limits<int>::max() << ".\n"
+                         "  --headless     Read events from stdin and print state frames.\n"
+                         "  --help, -h     Show this help.\n";
+            return 0;
+        } else if (arg == "--page-size" || arg.rfind("--page-size=", 0) == 0) {
+            std::string value;
+            if (arg == "--page-size") {
+                if (i + 1 < arguments.size()) value = arguments[++i];
+            } else {
+                value = arg.substr(12);
+            }
+            int parsed = 0;
+            const auto result = std::from_chars(value.data(), value.data() + value.size(), parsed);
+            if (result.ec != std::errc{} || result.ptr != value.data() + value.size() || parsed <= 0) {
+                std::cerr << "--page-size requires a positive integer from 1 to "
+                          << std::numeric_limits<int>::max() << ".\n";
+                return 2;
+            }
+            page_size = parsed;
         } else if (!arg.empty() && arg[0] != '-') {
             start_path = std::filesystem::u8path(arg);
+        } else {
+            std::cerr << "Unknown option: " << arg << ". Use --help for usage.\n";
+            return 2;
         }
     }
 
@@ -213,7 +245,7 @@ int main(int argc, char* argv[]) {
         auto rebuild_tree = [&]() {
             entries.clear();
             auto t0 = std::chrono::high_resolution_clock::now();
-            build_tree_entries(current_path, expanded_dirs, entries, 0, 30);
+            build_tree_entries(current_path, expanded_dirs, entries, 0, page_size);
             auto t1 = std::chrono::high_resolution_clock::now();
             last_scan_ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
             need_refresh = false;
@@ -228,7 +260,7 @@ int main(int argc, char* argv[]) {
                     auto paren = label.rfind('(');
                     auto slash = label.rfind('/');
                     if (paren != std::string::npos && slash != std::string::npos && slash > paren) {
-                        total_pages = std::stoi(label.substr(paren + 1, slash - paren - 1));
+                        total_pages = std::stoi(label.substr(slash + 1));
                     }
                     break;
                 }
@@ -240,7 +272,7 @@ int main(int argc, char* argv[]) {
         get_page_info(total_pages, current_page);
         headless_dump_frame(entries, selected, scroll_offset, visible_rows,
                             current_path, expanded_dirs, last_scan_ms,
-                            bar_fg, bar_bg, frame_num, total_pages, current_page);
+                            bar_fg, bar_bg, frame_num, total_pages, current_page, page_size);
         frame_num++;
 
         std::string event_line;
@@ -381,7 +413,7 @@ int main(int argc, char* argv[]) {
                 get_page_info(tp, cp);
                 headless_dump_frame(entries, selected, scroll_offset, visible_rows,
                                     current_path, expanded_dirs, last_scan_ms,
-                                    bar_fg, bar_bg, frame_num, tp, cp);
+                                    bar_fg, bar_bg, frame_num, tp, cp, page_size);
                 frame_num++;
             }
         }
@@ -441,7 +473,7 @@ int main(int argc, char* argv[]) {
             std::thread loader([&]() {
                 entries.clear();
                 auto t0 = std::chrono::high_resolution_clock::now();
-                build_tree_entries(current_path, expanded_dirs, entries, 0, 30);
+                build_tree_entries(current_path, expanded_dirs, entries, 0, page_size);
                 auto t1 = std::chrono::high_resolution_clock::now();
                 last_scan_ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
                 loading = false;
@@ -477,7 +509,7 @@ int main(int argc, char* argv[]) {
                 auto paren = label.rfind('(');
                 auto slash = label.rfind('/');
                 if (paren != std::string::npos && slash != std::string::npos && slash > paren) {
-                    total_pages = std::stoi(label.substr(paren + 1, slash - paren - 1));
+                    total_pages = std::stoi(label.substr(slash + 1));
                 }
                 break;
             }

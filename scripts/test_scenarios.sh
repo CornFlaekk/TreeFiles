@@ -23,7 +23,7 @@ check() {
     local name="$1"; shift
     local output="$1"; shift
     local pattern="$1"; shift
-    if echo "$output" | grep -q "$pattern"; then
+    if grep -q "$pattern" <<< "$output"; then
         echo "  PASS: $name"
         PASS=$((PASS + 1))
     else
@@ -37,7 +37,7 @@ check_not() {
     local name="$1"; shift
     local output="$1"; shift
     local pattern="$1"; shift
-    if echo "$output" | grep -q "$pattern"; then
+    if grep -q "$pattern" <<< "$output"; then
         echo "  FAIL: $name (unexpected match)"
         FAIL=$((FAIL + 1))
     else
@@ -54,7 +54,8 @@ extract_frame() {
 
 run_headless() {
     local events="$1"
-    echo "$events" | "$BINARY" "$HEADLESS" "$TEST_DIR" 2>&1
+    shift
+    echo "$events" | "$BINARY" "$HEADLESS" "$@" "$TEST_DIR" 2>&1
 }
 
 if [ -z "${TREEFILES_BINARY:-}" ]; then
@@ -223,7 +224,8 @@ setup_bigdir() {
 
 run_headless_bigdir() {
     local events="$1"
-    echo "$events" | "$BINARY" "$HEADLESS" "$TEST_DIR/bigdir" 2>&1
+    shift
+    echo "$events" | "$BINARY" "$HEADLESS" "$@" "$TEST_DIR/bigdir" 2>&1
 }
 
 setup_bigdir
@@ -260,6 +262,80 @@ q")
 f1=$(extract_frame "$output" 1)
 check "p on page 0: still page 0" "$f1" "Siguiente"
 check_not "p on page 0: no Anterior" "$f1" "Anterior"
+
+echo ""
+echo "=== Scenario 12: Configurable page size ==="
+output=$(run_headless_bigdir "q")
+f0=$(extract_frame "$output" 0)
+check "default page size remains 30" "$f0" "page_size: 30"
+check "default total page count" "$f0" "pagination: page 1 of 2"
+
+output=$(run_headless_bigdir $'n\np\nq' --page-size 7)
+f0=$(extract_frame "$output" 0)
+f1=$(extract_frame "$output" 1)
+f2=$(extract_frame "$output" 2)
+check "custom first page: seven files and next" "$f0" "total_entries: 8"
+check "custom total page count" "$f0" "pagination: page 1 of 8"
+check_not "custom first page stops after seven files" "$f0" "file_08.txt"
+check "custom middle page: seven files and two markers" "$f1" "total_entries: 9"
+check "next advances custom page" "$f1" "pagination: page 2 of 8"
+check "custom next selects first file" "$f1" '>>> \[FILE\] file_08.txt'
+check "custom previous selects last file" "$f2" '>>> \[FILE\] file_07.txt'
+
+output=$(run_headless_bigdir $'n\nn\nn\nn\nn\nn\nn\nn\np\nq' --page-size=7)
+f7=$(extract_frame "$output" 7)
+f8=$(extract_frame "$output" 8)
+f9=$(extract_frame "$output" 9)
+check "last custom page has one file and previous" "$f7" "total_entries: 2"
+check "equals option reaches last page" "$f7" "pagination: page 8 of 8"
+check "next stops at last custom page" "$f8" "pagination: page 8 of 8"
+check "previous from last page selects prior last file" "$f9" '>>> \[FILE\] file_49.txt'
+
+output=$(run_headless_bigdir $'n\np\nq' --page-size 1)
+f0=$(extract_frame "$output" 0)
+f1=$(extract_frame "$output" 1)
+f2=$(extract_frame "$output" 2)
+check "one entry per page" "$f0" "pagination: page 1 of 50"
+check "one-entry page selection" "$f1" '>>> \[FILE\] file_02.txt'
+check "one-entry previous selection" "$f2" '>>> \[FILE\] file_01.txt'
+for size in 50 2147483647; do
+    output=$(run_headless_bigdir "q" --page-size "$size")
+    f0=$(extract_frame "$output" 0)
+    check "page size $size includes all files" "$f0" "total_entries: 50"
+    check_not "page size $size needs no next marker" "$f0" "Siguiente"
+done
+
+output=$(run_headless $'e\nn\nq' --page-size 7)
+f1=$(extract_frame "$output" 1)
+f2=$(extract_frame "$output" 2)
+check "expanded directory has independent custom page" "$f1" "total_entries: 9"
+check_not "expanded directory respects custom limit" "$f1" "file_08.txt"
+check "next navigates expanded child page" "$f2" '>>>   \[FILE\] file_08.txt'
+
+echo ""
+echo "=== Scenario 13: CLI validation ==="
+for arguments in "--page-size" "--page-size=" "--page-size 0" "--page-size -1" \
+                 "--page-size abc" "--page-size 7x" "--page-size 1.5" \
+                 "--page-size 2147483648" "--page-size 99999999999999999999"; do
+    read -r -a options <<< "$arguments"
+    if output=$("$BINARY" --headless "${options[@]}" </dev/null 2>&1); then
+        status=0
+    else
+        status=$?
+    fi
+    check "invalid argument exit: $arguments" "$status" '^2$'
+    check "invalid argument message: $arguments" "$output" 'positive integer'
+    check_not "invalid argument does not scan: $arguments" "$output" '=== FRAME'
+done
+output=$("$BINARY" --help)
+check "CLI help documents page size" "$output" 'page-size N'
+if output=$("$BINARY" --headless --page-sze 7 </dev/null 2>&1); then
+    status=0
+else
+    status=$?
+fi
+check "unknown option exit" "$status" '^2$'
+check "unknown option message" "$output" 'Unknown option'
 
 echo ""
 # ============================================================
