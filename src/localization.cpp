@@ -11,11 +11,13 @@ const std::array<const char*, text_count> english = {
     "Scan", " Yes ", " No ", "Bar BACKGROUND color:", "Bar TEXT color:",
     "Black", "Red", "Green", "Yellow", "Blue", "Magenta", "Cyan", "White",
     "Loading", "Delete", "Error", "Colors are not supported by this terminal.",
-    "Usage: treefiles [--headless] [--page-size N] [--lang en|es] [directory]\n"
+    "Usage: treefiles [--headless] [--page-size N] [--lang en|es] [--save-settings] [directory]\n"
     "  --page-size N  Entries per directory page (default: 30).\n"
     "                 Positive integer, maximum 2147483647.\n"
     "  --lang en|es   Interface language (default: en).\n"
     "  --headless     Read events from stdin and print state frames.\n"
+    "  --save-settings Save the effective language and page size for future runs.\n"
+    "Settings priority: defaults, config.ini, then command-line options.\n"
     "                 Enter navigates, Backspace returns to parent, O enters a path.\n"
     "                 Headless: ENTER, BACKSPACE, CD <path>, REFRESH.\n"
     "  --version      Show the application version.\n"
@@ -36,11 +38,13 @@ const std::array<const char*, text_count> spanish_text = {
     "Escaneo", " S\u00ed ", " No ", "Color de FONDO barra:", "Color de TEXTO barra:",
     "Negro", "Rojo", "Verde", "Amarillo", "Azul", "Magenta", "Cian", "Blanco",
     "Cargando", "Borrar", "Error", "Colores no soportados en esta terminal.",
-    "Uso: treefiles [--headless] [--page-size N] [--lang en|es] [directorio]\n"
+    "Uso: treefiles [--headless] [--page-size N] [--lang en|es] [--save-settings] [directorio]\n"
     "  --page-size N  Elementos por p\u00e1gina y directorio (predeterminado: 30).\n"
     "                 Entero positivo, m\u00e1ximo 2147483647.\n"
     "  --lang en|es   Idioma de la interfaz (predeterminado: en).\n"
     "  --headless     Lee eventos de stdin e imprime el estado.\n"
+    "  --save-settings Guarda el idioma y tama\u00f1o efectivos para futuras sesiones.\n"
+    "Prioridad: valores por defecto, config.ini y opciones CLI.\n"
     "                 Enter navega, Backspace vuelve al padre, O escribe una ruta.\n"
     "                 Headless: ENTER, BACKSPACE, CD <ruta>, REFRESH.\n"
     "  --version      Muestra la versi\u00f3n de la aplicaci\u00f3n.\n"

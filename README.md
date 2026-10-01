@@ -99,14 +99,15 @@ The Makefile is for Linux; use CMake or the PowerShell scripts on Windows.
 ## Usage
 
 ~~~text
-treefiles [--headless] [--page-size N] [--lang en|es] [directory]
+treefiles [--headless] [--page-size N] [--lang en|es] [--save-settings] [directory]
 ~~~
 
 | Option | Behavior |
 |--------|----------|
 | `directory` | Directory to inspect; defaults to the current directory |
-| `--page-size N` / `--page-size=N` | Files and directories per page, default 30 |
+| `--page-size N` / `--page-size=N` | Files and directories per page, default 30 before saved settings |
 | `--lang en` / `--lang es` | Interface language; English is the default |
+| `--save-settings` | Save the effective language and page size for future runs |
 | `--headless` | Read events from stdin and print structured frames |
 | `--help`, `-h` | Show command-line help |
 | `--version` | Show the application version |
@@ -125,10 +126,23 @@ Headless mode logs opening actions without launching external applications.
 Confirmed deletion still removes the selected file or directory.
 
 Use `--page-size N` (or `--page-size=N`) to configure the number of files and
-directories per page. The default is 30; `N` must be a positive integer up to
+directories per page. The default is 30 unless a saved page size is present;
+`N` must be a positive integer up to
 2147483647. The limit applies independently to every directory, including
 expanded subdirectories. Previous/next navigation rows do not count toward it.
 This option works in both interactive and headless mode. Use `--help` for usage.
+
+Settings are loaded from the same `config.ini` as bar colors. Defaults are
+English and 30 entries per page. A valid config value overrides the default;
+`--lang` and `--page-size` override config for the current session. They are
+saved only when you pass `--save-settings`, for example:
+
+~~~powershell
+.\build\windows-debug\treefiles.exe --lang es --page-size 10 --save-settings .
+~~~
+
+Changing bar colors keeps the saved language and page size. Existing config
+files with only foreground/background continue to work.
 
 ```powershell
 .\build\windows-debug\treefiles.exe --page-size 10 .

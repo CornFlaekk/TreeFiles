@@ -507,6 +507,62 @@ else
 fi
 
 echo ""
+echo "=== Scenario 20: Persistent preferences ==="
+setup_bigdir
+output=$(run_headless_bigdir "q" --lang=es --page-size=7 --save-settings)
+check "save-settings persists language" "$(extract_frame "$output" 0)" 'language: es'
+check "save-settings persists page size" "$(extract_frame "$output" 0)" 'page_size: 7'
+check "config includes saved language" "$(cat "$TREEFILES_CONFIG")" '^language=es$'
+check "config includes saved page size" "$(cat "$TREEFILES_CONFIG")" '^page_size=7$'
+output=$(run_headless_bigdir "q")
+check "saved preferences load in a later process" "$(extract_frame "$output" 0)" 'language: es'
+check "saved page size loads in a later process" "$(extract_frame "$output" 0)" 'page_size: 7'
+output=$(run_headless_bigdir "q" --lang=en --page-size=2)
+check "CLI language overrides saved value for this session" "$(extract_frame "$output" 0)" 'language: en'
+check "CLI page size overrides saved value for this session" "$(extract_frame "$output" 0)" 'page_size: 2'
+check "session overrides leave saved language intact" "$(cat "$TREEFILES_CONFIG")" '^language=es$'
+check "session overrides leave saved page size intact" "$(cat "$TREEFILES_CONFIG")" '^page_size=7$'
+output=$(run_headless_bigdir $'COLOR red blue\nq' --lang=en --page-size=2)
+check "color selection applies with CLI preference overrides" "$(extract_frame "$output" 1)" 'bar_fg: 1'
+check "color selection updates the saved foreground" "$(cat "$TREEFILES_CONFIG")" '^foreground=red$'
+check "color save preserves saved language" "$(cat "$TREEFILES_CONFIG")" '^language=es$'
+check "color save preserves saved page size" "$(cat "$TREEFILES_CONFIG")" '^page_size=7$'
+check "color selection updates the saved background" "$(cat "$TREEFILES_CONFIG")" '^background=blue$'
+output=$(run_headless_bigdir "q")
+check "all preferences reload together" "$(extract_frame "$output" 0)" 'language: es'
+check "saved page size and colors reload together" "$(extract_frame "$output" 0)" 'page_size: 7'
+check "saved foreground reloads" "$(extract_frame "$output" 0)" 'bar_fg: 1'
+check "saved background reloads" "$(extract_frame "$output" 0)" 'bar_bg: 4'
+
+persisted_hash=$(sha256sum "$TREEFILES_CONFIG" | cut -d' ' -f1)
+output=$("$BINARY" --help --save-settings --lang en --page-size 4 2>&1)
+status=$?
+check "help succeeds without saving settings" "$status" '^0$'
+check "help leaves config unchanged" "$(sha256sum "$TREEFILES_CONFIG" | cut -d' ' -f1)" "^$persisted_hash$"
+output=$("$BINARY" --version --save-settings --lang en --page-size 4 2>&1)
+status=$?
+check "version succeeds without saving settings" "$status" '^0$'
+check "version leaves config unchanged" "$(sha256sum "$TREEFILES_CONFIG" | cut -d' ' -f1)" "^$persisted_hash$"
+if output=$("$BINARY" --save-settings --page-size 0 "$TEST_DIR/bigdir" 2>&1); then status=0; else status=$?; fi
+check "invalid option is rejected" "$status" '^2$'
+check "invalid option leaves config unchanged" "$(sha256sum "$TREEFILES_CONFIG" | cut -d' ' -f1)" "^$persisted_hash$"
+if output=$("$BINARY" --save-settings --lang en --page-size 4 "$TEST_DIR/missing-root" 2>&1); then status=0; else status=$?; fi
+check "invalid root is rejected" "$status" '^1$'
+check "invalid root leaves config unchanged" "$(sha256sum "$TREEFILES_CONFIG" | cut -d' ' -f1)" "^$persisted_hash$"
+old_config=$TREEFILES_CONFIG
+TREEFILES_CONFIG="$TEST_DIR/help-must-not-create/config.ini" "$BINARY" --help --save-settings >/dev/null 2>&1
+check "help does not create a new config file" "$(test -e "$TEST_DIR/help-must-not-create/config.ini"; echo $?)" '^1$'
+export TREEFILES_CONFIG=$old_config
+
+mkdir -p "$TEST_DIR/blocked.ini"
+printf preserve > "$TEST_DIR/blocked.ini/keep.txt"
+if output=$(TREEFILES_CONFIG="$TEST_DIR/blocked.ini" "$BINARY" --save-settings --lang es --page-size 7 "$TEST_DIR/bigdir" 2>&1); then status=0; else status=$?; fi
+check "failed atomic save returns an error" "$status" '^1$'
+check "failed atomic save preserves existing target" "$(cat "$TEST_DIR/blocked.ini/keep.txt")" '^preserve$'
+check "failed preference save removes temporary files" "$(find "$TEST_DIR" -maxdepth 1 -name 'blocked.ini.tmp.*' -print)" '^$'
+export TREEFILES_CONFIG=$old_config
+
+echo ""
 # ============================================================
 cleanup
 
