@@ -36,7 +36,7 @@ $(BUILD_DIR):
 	mkdir -p $(BUILD_DIR)
 
 # Regla para compilar .cpp a .o
-$(BUILD_DIR)/%.o: $(SRC_DIR)/%.cpp
+$(BUILD_DIR)/%.o: $(SRC_DIR)/%.cpp | $(BUILD_DIR)
 	$(CXX) $(CXXFLAGS) -c $< -o $@
 
 # Crear carpeta de tests
@@ -44,8 +44,8 @@ $(TEST_BUILD_DIR):
 	mkdir -p $(TEST_BUILD_DIR)
 
 # Compilar cada test como ejecutable independiente
-$(TEST_BUILD_DIR)/%: $(TEST_DIR)/%.cpp build/file_utils.o | $(TEST_BUILD_DIR)
-	$(CXX) $(CXXFLAGS) -o $@ $^
+$(TEST_BUILD_DIR)/%: $(TEST_DIR)/%.cpp $(filter-out build/main.o build/ui_utils.o,$(OBJ)) | $(TEST_BUILD_DIR)
+	$(CXX) $(CXXFLAGS) -o $@ $^ -pthread
 
 # Ejecutar tests unitarios
 test-unit: $(TEST_BIN)

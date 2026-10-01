@@ -7,6 +7,8 @@ $testRoot = Join-Path ([IO.Path]::GetTempPath()) ('treefiles_test_' + [Guid]::Ne
 $oldOutputEncoding = [Console]::OutputEncoding
 [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false)
 $script:checks = 0
+$oldConfig = $env:TREEFILES_CONFIG
+$env:TREEFILES_CONFIG = Join-Path $testRoot ('config con espacios ' + [char]0x00f1 + '/config.ini')
 
 function Check([bool]$Condition, [string]$Name) {
     if (-not $Condition) { throw "FAIL: $Name" }
@@ -100,12 +102,12 @@ try {
         Write-TestFile (Join-Path $bigDirectory ('file_{0:D4}.txt' -f $index)) 10
     }
     $output = Run-Headless @('n', 'p', 'p', 'q') $bigDirectory
-    Check ((Frame $output 0).Contains('Siguiente')) 'pagination next marker'
-    Check (-not (Frame $output 0).Contains('Anterior')) 'first page has no previous marker'
-    Check ((Frame $output 1).Contains('Anterior')) 'next page has previous marker'
+    Check ((Frame $output 0).Contains('Next')) 'pagination next marker'
+    Check (-not (Frame $output 0).Contains('Previous')) 'first page has no previous marker'
+    Check ((Frame $output 1).Contains('Previous')) 'next page has previous marker'
     Check ((Frame $output 1).Contains('selected_index: 1')) 'next selects first content row'
-    Check ((Frame $output 2).Contains('Siguiente')) 'previous returns to first page'
-    Check (-not (Frame $output 3).Contains('Anterior')) 'previous stops at first page'
+    Check ((Frame $output 2).Contains('Next')) 'previous returns to first page'
+    Check (-not (Frame $output 3).Contains('Previous')) 'previous stops at first page'
     Check ((Frame $output 0).Contains('page_size: 30')) 'default page size remains 30'
     Check ((Frame $output 0).Contains('pagination: page 1 of 2')) 'default total page count'
 
@@ -132,7 +134,7 @@ try {
     foreach ($size in @('50', '2147483647')) {
         $output = Run-Headless @('q') $bigDirectory @('--page-size', $size)
         Check ((Frame $output 0).Contains('total_entries: 50')) "page size $size includes all files"
-        Check (-not (Frame $output 0).Contains('Siguiente')) "page size $size needs no next marker"
+        Check (-not (Frame $output 0).Contains('Next')) "page size $size needs no next marker"
     }
 
     $output = Run-Headless @('e', 'DOWN', 'n', 'q') $testRoot @('--page-size', '1')
@@ -149,6 +151,8 @@ try {
     }
     $result = Run-Cli '--help'
     Check ($result.Code -eq 0 -and $result.Output.Contains('--page-size N')) 'CLI help documents page size'
+    $result = Run-Cli '--version'
+    Check ($result.Code -eq 0 -and $result.Output.Contains('TreeFiles 0.1.0')) 'CLI reports the release version'
     $result = Run-Cli '--page-sze 7'
     Check ($result.Code -eq 2 -and $result.Error.Contains('Unknown option')) 'unknown option is rejected'
 
@@ -161,8 +165,57 @@ try {
     Check ((Frame $output 0).Contains("current_path: $unicodeDirectory")) 'Unicode and spaces in directory argument'
     Check ((Frame $output 0).Contains($unicodeName)) 'UTF-8 file name'
 
+    $output = Run-Headless @('j', 'k', 'k', 'G', 'g', 'q') $testRoot
+    Check ((Frame $output 1).Contains('selected_index: 1')) 'Vim j moves down'
+    Check ((Frame $output 3).Contains('selected_index: 0')) 'Vim k stops at first entry'
+    $initialCount = [int]([regex]::Match((Frame $output 0), 'total_entries: (\d+)').Groups[1].Value)
+    Check ((Frame $output 4).Contains("selected_index: $($initialCount - 1)")) 'Vim G selects last entry'
+    Check ((Frame $output 5).Contains('selected_index: 0')) 'Vim g selects first entry'
+    $output = Run-Headless @('l', 'l', 'j', 'h', 'q') $testRoot
+    Check ((Frame $output 1).Contains('big.txt')) 'Vim l expands directory'
+    Check ((Frame $output 2).Contains('big.txt')) 'Vim l keeps expanded directory open'
+    Check (-not (Frame $output 4).Contains('big.txt')) 'Vim h from a child folds its parent'
+    Check ((Frame $output 4).Contains('selected_index: 0')) 'Vim h selects the folded parent'
+    $output = Run-Headless @('RIGHT', 'LEFT', 'q') $testRoot
+    Check ((Frame $output 1).Contains('big.txt')) 'right arrow expands directory'
+    Check (-not (Frame $output 2).Contains('big.txt')) 'left arrow folds directory'
+    $emptyDirectory = Join-Path $testRoot 'empty'
+    New-Item -ItemType Directory -Path $emptyDirectory | Out-Null
+    $output = Run-Headless @('j', 'k', 'h', 'l', 'g', 'G', 'q') $emptyDirectory
+    Check ((Frame $output 7).Contains('total_entries: 0')) 'Vim shortcuts are safe on an empty directory'
+
+    $output = Run-Headless @('q') $bigDirectory
+    Check ((Frame $output 0).Contains('language: en')) 'English is the default interface language'
+    Check ((Frame $output 0).Contains('Next')) 'default navigation is English'
+    $output = Run-Headless @('q') $bigDirectory @('--lang=es')
+    Check ((Frame $output 0).Contains('language: es')) 'Spanish language option'
+    Check ((Frame $output 0).Contains('Siguiente')) 'Spanish navigation is translated'
+    $result = Run-Cli '--help --lang es'
+    Check ($result.Code -eq 0 -and $result.Output.Contains('Uso:')) 'help uses selected language regardless of option order'
+    foreach ($arguments in @('--lang', '--lang=', '--lang fr')) {
+        $result = Run-Cli $arguments
+        Check ($result.Code -eq 2 -and $result.Error.Contains('--lang')) "invalid language: $arguments"
+    }
+
+    $output = Run-Headless @('COLOR red blue', 'q') $bigDirectory
+    Check ($output.Contains('ACTION colors_saved')) 'headless color selection saves configuration'
+    Check ((Frame $output 1).Contains('bar_fg: 1') -and (Frame $output 1).Contains('bar_bg: 4')) 'color selection applies immediately'
+    Check (Test-Path -LiteralPath $env:TREEFILES_CONFIG) 'configuration is saved to the override path'
+    $output = Run-Headless @('q') $bigDirectory
+    Check ((Frame $output 0).Contains('bar_fg: 1') -and (Frame $output 0).Contains('bar_bg: 4')) 'colors persist across sessions'
+    $output = Run-Headless @('COLOR white black', 'q') $bigDirectory
+    $output = Run-Headless @('COLOR purple blue', 'q') $bigDirectory
+    Check ((Frame $output 0).Contains('bar_fg: 7') -and (Frame $output 0).Contains('bar_bg: 0')) 'new colors replace previous configuration'
+    Check ($output.Contains('Invalid COLOR event')) 'invalid color event reports an error'
+    Check ((Frame $output 1).Contains('bar_fg: 7') -and (Frame $output 1).Contains('bar_bg: 0')) 'invalid colors leave settings unchanged'
+    [IO.File]::WriteAllText($env:TREEFILES_CONFIG, "foreground=invalid" + [Environment]::NewLine + "background=cyan" + [Environment]::NewLine)
+    $output = Run-Headless @('q') $bigDirectory
+    Check ((Frame $output 0).Contains('bar_fg: 0') -and (Frame $output 0).Contains('bar_bg: 6')) 'invalid saved color falls back without losing valid fields'
+
     Write-Host "Results: $script:checks passed, 0 failed"
 } finally {
+    if ($null -eq $oldConfig) { Remove-Item Env:TREEFILES_CONFIG -ErrorAction SilentlyContinue }
+    else { $env:TREEFILES_CONFIG = $oldConfig }
     [Console]::OutputEncoding = $oldOutputEncoding
     if (Test-Path -LiteralPath $testRoot) {
         $resolvedRoot = [IO.Path]::GetFullPath($testRoot)

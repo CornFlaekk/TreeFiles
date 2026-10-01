@@ -59,6 +59,10 @@ jobs:
           cd dist
           sha256sum treefiles-linux-x64.tar.gz > treefiles-linux-x64.tar.gz.sha256
 
+      - name: Test Linux Makefile
+        if: runner.os == 'Linux'
+        run: make test
+
       - name: Save packages
         uses: actions/upload-artifact@v7
         with:

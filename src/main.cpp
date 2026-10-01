@@ -3,6 +3,9 @@
 #include <ui_utils.h>
 #include <file_utils.h>
 #include "platform_utils.h"
+#include "localization.h"
+#include "settings.h"
+#include "version.h"
 #include <filesystem>
 #include <vector>
 #include <string>
@@ -16,7 +19,16 @@
 #include <thread>
 #include <atomic>
 #include <charconv>
-#include <limits>
+#include <array>
+
+static short curses_color(int index) {
+    // PDCurses and ncurses assign different numeric values to the same colors.
+    static constexpr std::array<short, 8> colors{
+        COLOR_BLACK, COLOR_RED, COLOR_GREEN, COLOR_YELLOW,
+        COLOR_BLUE, COLOR_MAGENTA, COLOR_CYAN, COLOR_WHITE
+    };
+    return colors.at(static_cast<size_t>(index));
+}
 
 static void headless_dump_frame(const std::vector<EntryInfo>& entries, int selected,
                                 int scroll_offset, int visible_rows,
@@ -31,6 +43,7 @@ static void headless_dump_frame(const std::vector<EntryInfo>& entries, int selec
     std::cout << "scroll_offset: " << scroll_offset << std::endl;
     std::cout << "visible_rows: " << visible_rows << std::endl;
     std::cout << "page_size: " << page_size << std::endl;
+    std::cout << "language: " << language_code() << std::endl;
     std::cout << "total_entries: " << entries.size() << std::endl;
     if (total_pages > 1) {
         std::cout << "pagination: page " << (current_page + 1) << " of " << total_pages << std::endl;
@@ -112,6 +125,7 @@ static int parse_headless_event(const std::string& line) {
     if (line == "DELETE")      return KEY_DC;
     if (line == "CTRL_H")      return 8;
     if (line == "ENTER")       return '\n';
+    if (line.rfind("COLOR ", 0) == 0) return 0x10000;
     if (line.size() == 1)      return line[0];
     return -1;
 }
@@ -174,9 +188,25 @@ static void update_scroll(int selected, int& scroll_offset, int visible_rows) {
     }
 }
 
+static bool collapse_selected_directory(const std::vector<EntryInfo>& entries, int& selected,
+                                         std::set<std::filesystem::path>& expanded_dirs) {
+    if (entries.empty()) return false;
+    const auto& entry = entries[selected];
+    if (entry.type == "[DIR] " && expanded_dirs.erase(entry.full_path)) return true;
+    for (int i = selected - 1; i >= 0; --i) {
+        if (entries[i].depth < entry.depth && entries[i].type == "[DIR] ") {
+            selected = i;
+            return expanded_dirs.erase(entries[i].full_path) > 0;
+        }
+    }
+    return false;
+}
+
 int main(int argc, char* argv[]) {
     ConsoleEncoding console_encoding;
     bool headless = false;
+    bool show_usage = false;
+    bool show_version = false;
     int page_size = 30;
     std::filesystem::path start_path = ".";
 
@@ -186,13 +216,20 @@ int main(int argc, char* argv[]) {
         if (arg == "--headless") {
             headless = true;
         } else if (arg == "--help" || arg == "-h") {
-            std::cout << "Usage: treefiles [--headless] [--page-size N] [directory]\n"
-                         "  --page-size N  Entries per directory page (default: 30).\n"
-                         "                 N must be a positive integer up to "
-                      << std::numeric_limits<int>::max() << ".\n"
-                         "  --headless     Read events from stdin and print state frames.\n"
-                         "  --help, -h     Show this help.\n";
-            return 0;
+            show_usage = true;
+        } else if (arg == "--version") {
+            show_version = true;
+        } else if (arg == "--lang" || arg.rfind("--lang=", 0) == 0) {
+            std::string value;
+            if (arg == "--lang") {
+                if (i + 1 < arguments.size()) value = arguments[++i];
+            } else {
+                value = arg.substr(7);
+            }
+            if (!set_language(value)) {
+                std::cerr << text(Text::LanguageError) << "\n";
+                return 2;
+            }
         } else if (arg == "--page-size" || arg.rfind("--page-size=", 0) == 0) {
             std::string value;
             if (arg == "--page-size") {
@@ -203,24 +240,36 @@ int main(int argc, char* argv[]) {
             int parsed = 0;
             const auto result = std::from_chars(value.data(), value.data() + value.size(), parsed);
             if (result.ec != std::errc{} || result.ptr != value.data() + value.size() || parsed <= 0) {
-                std::cerr << "--page-size requires a positive integer from 1 to "
-                          << std::numeric_limits<int>::max() << ".\n";
+                std::cerr << text(Text::PageSizeError) << "\n";
                 return 2;
             }
             page_size = parsed;
         } else if (!arg.empty() && arg[0] != '-') {
             start_path = std::filesystem::u8path(arg);
         } else {
-            std::cerr << "Unknown option: " << arg << ". Use --help for usage.\n";
+            std::cerr << text(Text::UnknownOption) << arg << ". " << text(Text::UsageHint) << "\n";
             return 2;
         }
+    }
+    if (show_usage) {
+        std::cout << text(Text::Usage);
+        return 0;
+    }
+    if (show_version) {
+        std::cout << "TreeFiles " << treefiles_version << "\n";
+        return 0;
     }
 
     std::error_code path_error;
     if (!std::filesystem::is_directory(start_path, path_error)) {
-        std::cerr << "Not a readable directory: " << start_path.u8string() << std::endl;
+        std::cerr << text(Text::UnreadableDirectory) << start_path.u8string() << std::endl;
         return 1;
     }
+
+    const auto config_path = configuration_file();
+    std::string config_error;
+    auto colors = load_color_settings(config_path, config_error);
+    if (!config_error.empty()) std::cerr << text(Text::ConfigLoadWarning) << config_error << "\n";
 
     // ==================== HEADLESS MODE ====================
     if (headless) {
@@ -229,8 +278,8 @@ int main(int argc, char* argv[]) {
         int scroll_offset = 0;
         int visible_rows = 30;
 
-        int bar_bg = COLOR_YELLOW;
-        int bar_fg = COLOR_BLACK;
+        int bar_bg = colors.background;
+        int bar_fg = colors.foreground;
 
         std::filesystem::path current_path = start_path;
         auto& expanded_dirs = get_expanded_dirs();
@@ -295,9 +344,11 @@ int main(int argc, char* argv[]) {
                 running = false;
                 break;
             case KEY_UP:
+            case 'k':
                 if (selected > 0) selected--;
                 break;
-            case KEY_DOWN: {
+            case KEY_DOWN:
+            case 'j': {
                 int n = (int)entries.size();
                 if (selected < n - 1) selected++;
                 break;
@@ -311,11 +362,13 @@ int main(int argc, char* argv[]) {
                 break;
             case 'e':
             case 'E':
+            case 'l':
+            case KEY_RIGHT:
                 if (!entries.empty()) {
                     const auto& entry = entries[selected];
                     if (entry.type == "[DIR] ") {
                         auto dir_path = entry.full_path;
-                        if (expanded_dirs.count(dir_path)) {
+                        if (expanded_dirs.count(dir_path) && (input == 'e' || input == 'E')) {
                             expanded_dirs.erase(dir_path);
                         } else {
                             expanded_dirs.insert(dir_path);
@@ -325,14 +378,25 @@ int main(int argc, char* argv[]) {
                         expand_resto(entry.full_path);
                         need_refresh = true;
                         select_first_owner = entry.full_path;
-                    } else if (entry.type == "[RESTO_PREV]") {
+                    } else if (entry.type == "[RESTO_PREV]" && (input == 'e' || input == 'E')) {
                         prev_resto(entry.full_path);
                         need_refresh = true;
                         select_last_owner = entry.full_path;
                     }
                 }
                 break;
+            case 'h':
+            case KEY_LEFT:
+                need_refresh = collapse_selected_directory(entries, selected, expanded_dirs);
+                break;
+            case 'g':
+                selected = 0;
+                break;
+            case 'G':
+                if (!entries.empty()) selected = static_cast<int>(entries.size()) - 1;
+                break;
             case 'n':
+            case 'N':
                 if (!entries.empty()) {
                     auto owner = find_pagination_owner(entries, selected, current_path);
                     bool has_next = false;
@@ -350,6 +414,7 @@ int main(int argc, char* argv[]) {
                 }
                 break;
             case 'p':
+            case 'P':
                 if (!entries.empty()) {
                     auto owner = find_pagination_owner(entries, selected, current_path);
                     if (get_current_page(owner) > 0) {
@@ -365,7 +430,7 @@ int main(int argc, char* argv[]) {
                     if (entry.type == "[RESTO_PREV]" || entry.type == "[RESTO_NEXT]")
                         break;
                     std::cout << "=== POPUP confirm_delete ===" << std::endl;
-                    std::cout << "message: Delete \"" << entry.name << "\"?" << std::endl;
+                    std::cout << "message: " << text(Text::DeletePrompt) << " \"" << entry.name << "\"?" << std::endl;
                     std::cout << "=== END POPUP ===" << std::endl;
 
                     std::string response;
@@ -396,12 +461,33 @@ int main(int argc, char* argv[]) {
                 }
                 break;
             case 'b':
+            case 'B':
                 std::cout << "=== POPUP bar_color ===" << std::endl;
                 std::cout << "colors: black, red, green, yellow, blue, magenta, cyan, white"
                           << std::endl;
                 std::cout << "=== END POPUP ===" << std::endl;
                 popup_handled = true;
                 break;
+            case 0x10000: {
+                std::istringstream event(event_line);
+                std::string command, foreground, background, extra;
+                event >> command >> foreground >> background;
+                const int fg = color_index(foreground), bg = color_index(background);
+                if (fg < 0 || bg < 0 || (event >> extra)) {
+                    std::cout << "=== POPUP error ===\nmessage: " << text(Text::InvalidColorEvent) << "\n=== END POPUP ===\n";
+                    break;
+                }
+                colors = {fg, bg};
+                bar_fg = fg;
+                bar_bg = bg;
+                if (!save_color_settings(config_path, colors, config_error)) {
+                    std::cout << "=== POPUP error ===\nmessage: " << text(Text::ConfigSaveWarning)
+                              << config_error << "\n=== END POPUP ===\n";
+                } else {
+                    std::cout << "=== ACTION colors_saved ===\n=== END ACTION ===\n";
+                }
+                break;
+            }
             }
 
             if (!popup_handled || need_refresh) {
@@ -428,14 +514,14 @@ int main(int argc, char* argv[]) {
     keypad(stdscr, TRUE);
     curs_set(0);
 
-    int bar_bg = COLOR_YELLOW;
-    int bar_fg = COLOR_BLACK;
+    int bar_bg = colors.background;
+    int bar_fg = colors.foreground;
 
     if (has_colors()) {
         start_color();
         use_default_colors();
         init_pair(1, COLOR_WHITE, -1);
-        init_pair(2, bar_fg, bar_bg);
+        init_pair(2, curses_color(bar_fg), curses_color(bar_bg));
     }
 
     endwin();
@@ -465,7 +551,7 @@ int main(int argc, char* argv[]) {
     while (running) {
         clear();
         getmaxyx(stdscr, rows, cols);
-        visible_rows = rows - 4;
+        visible_rows = rows - 1 - footer_height(cols);
         if (visible_rows < 1) visible_rows = 1;
         if (need_refresh) {
             loading = true;
@@ -527,9 +613,11 @@ int main(int argc, char* argv[]) {
                 running = false;
                 break;
             case KEY_UP:
+            case 'k':
                 if (selected > 0) selected--;
                 break;
             case KEY_DOWN:
+            case 'j':
                 if (selected < (int)entries.size() - 1) selected++;
                 break;
             case ' ':
@@ -541,11 +629,13 @@ int main(int argc, char* argv[]) {
                 break;
             case 'e':
             case 'E':
+            case 'l':
+            case KEY_RIGHT:
                 if (!entries.empty()) {
                     const auto& entry = entries[selected];
                     if (entry.type == "[DIR] ") {
                         auto dir_path = entry.full_path;
-                        if (expanded_dirs.count(dir_path)) {
+                        if (expanded_dirs.count(dir_path) && (input == 'e' || input == 'E')) {
                             expanded_dirs.erase(dir_path);
                         } else {
                             expanded_dirs.insert(dir_path);
@@ -555,14 +645,25 @@ int main(int argc, char* argv[]) {
                         expand_resto(entry.full_path);
                         need_refresh = true;
                         select_first_owner = entry.full_path;
-                    } else if (entry.type == "[RESTO_PREV]") {
+                    } else if (entry.type == "[RESTO_PREV]" && (input == 'e' || input == 'E')) {
                         prev_resto(entry.full_path);
                         need_refresh = true;
                         select_last_owner = entry.full_path;
                     }
                 }
                 break;
+            case 'h':
+            case KEY_LEFT:
+                need_refresh = collapse_selected_directory(entries, selected, expanded_dirs);
+                break;
+            case 'g':
+                selected = 0;
+                break;
+            case 'G':
+                if (!entries.empty()) selected = static_cast<int>(entries.size()) - 1;
+                break;
             case 'n':
+            case 'N':
                 if (!entries.empty()) {
                     auto owner = find_pagination_owner(entries, selected, current_path);
                     bool has_next = false;
@@ -580,6 +681,7 @@ int main(int argc, char* argv[]) {
                 }
                 break;
             case 'p':
+            case 'P':
                 if (!entries.empty()) {
                     auto owner = find_pagination_owner(entries, selected, current_path);
                     if (get_current_page(owner) > 0) {
@@ -594,7 +696,7 @@ int main(int argc, char* argv[]) {
                     const auto& entry = entries[selected];
                     if (entry.type == "[RESTO_PREV]" || entry.type == "[RESTO_NEXT]")
                         break;
-                    std::string msg = "Delete \"" + entry.name + "\"?";
+                    std::string msg = std::string(text(Text::DeletePrompt)) + " \"" + entry.name + "\"?";
                     if (confirm_popup(msg)) {
                         try {
                             if (entry.type == "[DIR] ") {
@@ -604,22 +706,26 @@ int main(int argc, char* argv[]) {
                             }
                             clear_dir_size_cache();
                         } catch (const std::exception& ex) {
-                            confirm_popup(std::string("Error: ") + ex.what());
+                            confirm_popup(std::string(text(Text::Error)) + ": " + ex.what());
                         }
                         need_refresh = true;
                     }
                 }
                 break;
             case 'b':
+            case 'B':
                 if (has_colors()) {
-                    auto [fg, bg] = bar_color_selection_popup();
+                    auto [fg, bg] = bar_color_selection_popup(bar_fg, bar_bg);
                     if (fg >= 0 && bg >= 0) {
                         bar_fg = fg;
                         bar_bg = bg;
-                        init_pair(2, bar_fg, bar_bg);
+                        init_pair(2, curses_color(bar_fg), curses_color(bar_bg));
+                        colors = {fg, bg};
+                        if (!save_color_settings(config_path, colors, config_error))
+                            confirm_popup(std::string(text(Text::ConfigSaveWarning)) + config_error);
                     }
                 } else {
-                    confirm_popup("Colores no soportados en esta terminal.");
+                    confirm_popup(text(Text::ColorsUnsupported));
                 }
                 break;
         }
