@@ -5,7 +5,9 @@ $ErrorActionPreference = 'Stop'
 $Binary = (Resolve-Path -LiteralPath $Binary).Path
 $testRoot = Join-Path ([IO.Path]::GetTempPath()) ('treefiles_test_' + [Guid]::NewGuid().ToString('N'))
 $oldOutputEncoding = [Console]::OutputEncoding
+$oldInputEncoding = $OutputEncoding
 [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false)
+$OutputEncoding = New-Object System.Text.UTF8Encoding($false)
 $script:checks = 0
 $oldConfig = $env:TREEFILES_CONFIG
 $env:TREEFILES_CONFIG = Join-Path $testRoot ('config con espacios ' + [char]0x00f1 + '/config.ini')
@@ -289,6 +291,25 @@ try {
         $pageProcess.Dispose()
     }
 
+    $navRoot = Join-Path $testRoot ('navigation-' + [char]0x00f1)
+    $spaceName = 'folder with spaces ' + [char]0x00f1
+    New-Item -ItemType Directory -Path (Join-Path $navRoot 'sub') -Force | Out-Null
+    New-Item -ItemType Directory -Path (Join-Path $navRoot $spaceName) -Force | Out-Null
+    Write-TestFile (Join-Path $navRoot 'sub/deep.txt') 20
+    Write-TestFile (Join-Path $navRoot ($spaceName + '/inside.txt')) 2
+    Write-TestFile (Join-Path $navRoot 'root.txt') 1
+    $navEvents = @('ENTER', 'BACKSPACE', ('CD ' + $spaceName),
+                   'CD missing directory', 'BACKSPACE', 'ENTER', 'ENTER', 'q')
+    $output = Run-Headless $navEvents $navRoot
+    Check ((Frame $output 1).Contains((Join-Path $navRoot 'sub'))) 'Enter changes the root to the selected directory'
+    Check ((Frame $output 2).Contains("current_path: $navRoot")) 'Backspace returns to the parent root'
+    Check ((Frame $output 2).Contains('>>> [DIR]')) 'Backspace selects the directory returned from'
+    Check ((Frame $output 3).Contains((Join-Path $navRoot $spaceName))) 'CD accepts a relative Unicode path with spaces'
+    Check ($output.Contains('POPUP navigation_error')) 'invalid CD reports a path error'
+    Check ((Frame $output 4).Contains("current_path: $navRoot")) 'failed CD keeps the previous root'
+    Check ((Frame $output 5).Contains((Join-Path $navRoot $spaceName))) 'Enter reopens the selected directory'
+    Check ((Frame $output 6).Contains((Join-Path $navRoot $spaceName))) 'Enter on a file does not launch or navigate'
+
     $output = Run-Headless @('q') $bigDirectory
     Check ((Frame $output 0).Contains('language: en')) 'English is the default interface language'
     Check ((Frame $output 0).Contains('Next')) 'default navigation is English'
@@ -361,6 +382,7 @@ try {
     if ($null -eq $oldConfig) { Remove-Item Env:TREEFILES_CONFIG -ErrorAction SilentlyContinue }
     else { $env:TREEFILES_CONFIG = $oldConfig }
     [Console]::OutputEncoding = $oldOutputEncoding
+    $OutputEncoding = $oldInputEncoding
     if (Test-Path -LiteralPath $testRoot) {
         $resolvedRoot = [IO.Path]::GetFullPath($testRoot)
         $temporaryRoot = [IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd('\') + '\'

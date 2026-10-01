@@ -8,6 +8,9 @@
 #include "localization.h"
 #include <array>
 #include <tuple>
+#include <cwctype>
+#include <cstdint>
+#include <climits>
 
 void draw_terminal_border() {
     // Empty: header and footer now draw their own borders.
@@ -66,8 +69,8 @@ struct FooterSection {
 };
 
 static const FooterSection sections[] = {
-    {Text::Navigation, {Text::MoveBinding, Text::PageBinding}},
-    {Text::Actions, {Text::ExpandBinding, Text::OpenBinding, Text::DeleteBinding}},
+    {Text::Navigation, {Text::MoveBinding, Text::PageBinding, Text::EnterDirectoryBinding, Text::ParentDirectoryBinding}},
+    {Text::Actions, {Text::ExpandBinding, Text::OpenBinding, Text::DeleteBinding, Text::ChangeRootBinding}},
     {Text::System, {Text::ColorBinding, Text::WarningsBinding, Text::RefreshBinding, Text::QuitBinding}},
 };
 
@@ -449,6 +452,101 @@ void show_scan_diagnostics(const ScanResult& result) {
     delwin(win);
     touchwin(stdscr);
     refresh();
+}
+
+static std::string wide_to_utf8(const std::wstring& value) {
+    std::string encoded;
+    for (size_t index = 0; index < value.size(); ++index) {
+        std::uint32_t codepoint = static_cast<std::uint32_t>(value[index]);
+#if WCHAR_MAX <= 0xffff
+        if (codepoint >= 0xd800 && codepoint <= 0xdbff && index + 1 < value.size()) {
+            const std::uint32_t low = static_cast<std::uint32_t>(value[index + 1]);
+            if (low >= 0xdc00 && low <= 0xdfff) {
+                codepoint = 0x10000 + ((codepoint - 0xd800) << 10) + (low - 0xdc00);
+                ++index;
+            } else {
+                codepoint = 0xfffd;
+            }
+        } else if (codepoint >= 0xd800 && codepoint <= 0xdfff) {
+            codepoint = 0xfffd;
+        }
+#else
+        if (codepoint > 0x10ffff || (codepoint >= 0xd800 && codepoint <= 0xdfff))
+            codepoint = 0xfffd;
+#endif
+        if (codepoint <= 0x7f) {
+            encoded.push_back(static_cast<char>(codepoint));
+        } else if (codepoint <= 0x7ff) {
+            encoded.push_back(static_cast<char>(0xc0 | (codepoint >> 6)));
+            encoded.push_back(static_cast<char>(0x80 | (codepoint & 0x3f)));
+        } else if (codepoint <= 0xffff) {
+            encoded.push_back(static_cast<char>(0xe0 | (codepoint >> 12)));
+            encoded.push_back(static_cast<char>(0x80 | ((codepoint >> 6) & 0x3f)));
+            encoded.push_back(static_cast<char>(0x80 | (codepoint & 0x3f)));
+        } else {
+            encoded.push_back(static_cast<char>(0xf0 | (codepoint >> 18)));
+            encoded.push_back(static_cast<char>(0x80 | ((codepoint >> 12) & 0x3f)));
+            encoded.push_back(static_cast<char>(0x80 | ((codepoint >> 6) & 0x3f)));
+            encoded.push_back(static_cast<char>(0x80 | (codepoint & 0x3f)));
+        }
+    }
+    return encoded;
+}
+
+bool prompt_for_path(std::string& utf8_path) {
+    int rows = 0, cols = 0;
+    getmaxyx(stdscr, rows, cols);
+    if (rows < 9 || cols < 30) return false;
+    const int width = std::min(cols - 2, 82);
+    const int height = 7;
+    WINDOW* win = newwin(height, width, (rows - height) / 2, (cols - width) / 2);
+    if (!win) return false;
+    keypad(win, TRUE);
+    std::wstring value;
+    bool accepted = false;
+    while (true) {
+        werase(win);
+        box(win, 0, 0);
+        mvwaddnstr(win, 1, 2, text(Text::PathPrompt), width - 4);
+        mvwaddnstr(win, 5, 2, text(Text::PathPromptHint), width - 4);
+        const int field_width = width - 4;
+        const size_t start = value.size() > static_cast<size_t>(field_width)
+            ? value.size() - static_cast<size_t>(field_width) : 0;
+        if (start < value.size())
+            mvwaddnwstr(win, 3, 2, value.data() + start, field_width);
+        wmove(win, 3, 2 + static_cast<int>(std::min(value.size() - start,
+                                                    static_cast<size_t>(field_width - 1))));
+        wrefresh(win);
+
+        wint_t input = 0;
+        const int kind = wget_wch(win, &input);
+        if (kind == ERR) continue;
+        if ((kind == KEY_CODE_YES && input == KEY_BACKSPACE) || input == 8 || input == 127) {
+            if (!value.empty()) {
+                const wchar_t last = value.back();
+                value.pop_back();
+                if (last >= 0xdc00 && last <= 0xdfff && !value.empty() &&
+                    value.back() >= 0xd800 && value.back() <= 0xdbff) value.pop_back();
+            }
+        } else if ((kind == KEY_CODE_YES && input == KEY_ENTER) || input == L'\n' || input == L'\r') {
+            accepted = !value.empty();
+            break;
+        } else if (kind == OK && input == 27) {
+            break;
+        } else if (kind == OK && input >= 32 && value.size() < 512 &&
+                   (std::iswprint(static_cast<wint_t>(input)) ||
+                    (input >= 0xd800 && input <= 0xdfff))) {
+            value.push_back(static_cast<wchar_t>(input));
+        }
+    }
+
+    if (accepted) {
+        utf8_path = wide_to_utf8(value);
+    }
+    delwin(win);
+    touchwin(stdscr);
+    refresh();
+    return accepted;
 }
 
 std::pair<int, int> bar_color_selection_popup(int foreground, int background) {

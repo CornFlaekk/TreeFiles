@@ -156,6 +156,9 @@ are included in directory totals.
 | Down / `j` | Move down |
 | Right / `l` | Expand a directory; advance a selected next-page row |
 | Left / `h` | Fold a directory; from a child, select and fold its parent |
+| Enter | Enter the selected directory; activates a selected page row |
+| Backspace | Return to the parent directory |
+| `O` | Type a path relative to the current root or an absolute path |
 | `g` / `G` | Select the first / last row of the current tree |
 | `E` | Toggle directory expansion or activate a pagination row |
 | `N` / `P` | Next / previous page of the selected directory |
@@ -220,7 +223,9 @@ $env:TREEFILES_CONFIG = "$PWD\colors.ini"
 ### Headless use and tests
 
 Pipe one event per line. Arrow events use `UP`, `DOWN`, `LEFT` and `RIGHT`;
-`SPACE`, `DELETE`, `ENTER` and `REFRESH` represent those actions. Letter shortcuts work as
+`SPACE`, `DELETE`, `ENTER`, `BACKSPACE` and `REFRESH` represent those actions.
+`CD <path>` changes to a path relative to the current root or to an absolute
+path; the entire remainder of the line is treated as the literal path. Letter shortcuts work as
 in the interactive interface. `COLOR foreground background` applies and saves
 colors; `B` only logs the available choices in headless mode.
 

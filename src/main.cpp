@@ -155,6 +155,8 @@ static int parse_headless_event(const std::string& line) {
     if (line == "CTRL_H")      return 8;
     if (line == "ENTER")       return '\n';
     if (line == "REFRESH")     return 0x10001;
+    if (line.rfind("CD ", 0) == 0) return 0x10002;
+    if (line == "BACKSPACE")   return KEY_BACKSPACE;
     if (line.rfind("COLOR ", 0) == 0) return 0x10000;
     if (line.size() == 1)      return line[0];
     return -1;
@@ -271,6 +273,79 @@ static ScanResult rebuild_tree_preserving_selection(
         selected = nearest >= 0 ? nearest : 0;
     }
     return result;
+}
+
+static bool navigate_to_root(const std::filesystem::path& requested_path,
+                             std::filesystem::path& current_path,
+                             std::set<std::filesystem::path>& expanded_dirs,
+                             int page_size, std::vector<EntryInfo>& entries,
+                             ScanResult& scan_result, int& selected, int& scroll_offset,
+                             int visible_rows, double& last_scan_ms,
+                             const std::filesystem::path& select_on_return,
+                             std::string& error_message) {
+    namespace fs = std::filesystem;
+    fs::path candidate = requested_path.is_absolute()
+        ? requested_path : current_path / requested_path;
+    std::error_code error;
+    candidate = fs::canonical(candidate, error);
+    if (error) {
+        error_message = error.message();
+        return false;
+    }
+    if (!fs::is_directory(candidate, error) || error) {
+        error_message = error ? error.message() : std::make_error_code(std::errc::not_a_directory).message();
+        return false;
+    }
+
+    clear_dir_size_cache();
+    ScanOptions options;
+    options.reset_pagination = true;
+    const auto started = std::chrono::steady_clock::now();
+    auto next_scan = scan_tree_entries(candidate, {}, page_size, options);
+    last_scan_ms = std::chrono::duration<double, std::milli>(
+        std::chrono::steady_clock::now() - started).count();
+    if (next_scan.status == ScanStatus::failed) {
+        error_message = next_scan.diagnostics.empty()
+            ? std::make_error_code(std::errc::io_error).message()
+            : next_scan.diagnostics.front().error.message();
+        return false;
+    }
+
+    current_path = candidate;
+    expanded_dirs.clear();
+    reset_resto_state();
+    entries = next_scan.entries;
+    scan_result = std::move(next_scan);
+    selected = 0;
+    if (!select_on_return.empty()) {
+        auto returned_directory = std::find_if(entries.begin(), entries.end(), [&](const EntryInfo& entry) {
+            return entry.full_path == select_on_return && entry.type == "[DIR] ";
+        });
+        if (returned_directory != entries.end())
+            selected = static_cast<int>(returned_directory - entries.begin());
+    }
+    if (entries.empty()) selected = 0;
+    scroll_offset = 0;
+    update_scroll(selected, scroll_offset, visible_rows);
+    return true;
+}
+
+static bool navigate_to_parent(std::filesystem::path& current_path,
+                               std::set<std::filesystem::path>& expanded_dirs,
+                               int page_size, std::vector<EntryInfo>& entries,
+                               ScanResult& scan_result, int& selected, int& scroll_offset,
+                               int visible_rows, double& last_scan_ms,
+                               std::string& error_message) {
+    namespace fs = std::filesystem;
+    std::error_code error;
+    const fs::path absolute_path = fs::absolute(current_path, error).lexically_normal();
+    if (error) { error_message = error.message(); return false; }
+    if (absolute_path == absolute_path.root_path()) return false;
+    const fs::path parent = absolute_path.parent_path();
+    if (parent.empty() || parent == absolute_path) return false;
+    return navigate_to_root(parent, current_path, expanded_dirs, page_size, entries,
+        scan_result, selected, scroll_offset, visible_rows, last_scan_ms,
+        absolute_path, error_message);
 }
 
 int main(int argc, char* argv[]) {
@@ -446,6 +521,58 @@ int main(int argc, char* argv[]) {
                 need_refresh = true;
                 refresh_next_scan = true;
                 break;
+            case '\n':
+                if (!entries.empty() && selected >= 0 && selected < static_cast<int>(entries.size())) {
+                    const auto entry = entries[selected];
+                    if (entry.type == "[DIR] ") {
+                        std::string error;
+                        if (!navigate_to_root(entry.full_path, current_path, expanded_dirs, page_size,
+                            entries, scan_result, selected, scroll_offset, visible_rows, last_scan_ms,
+                            {}, error)) {
+                            std::cout << "=== POPUP navigation_error ===\nmessage: "
+                                      << text(Text::NavigationError) << error
+                                      << "\n=== END POPUP ===\n";
+                            popup_handled = true;
+                        }
+                    } else if (entry.type == "[RESTO_NEXT]") {
+                        expand_resto(entry.full_path);
+                        need_refresh = true;
+                        select_first_owner = entry.full_path;
+                    } else if (entry.type == "[RESTO_PREV]") {
+                        prev_resto(entry.full_path);
+                        need_refresh = true;
+                        select_last_owner = entry.full_path;
+                    }
+                }
+                break;
+            case KEY_BACKSPACE:
+            case 8:
+            case 127: {
+                std::string error;
+                if (!navigate_to_parent(current_path, expanded_dirs, page_size, entries,
+                    scan_result, selected, scroll_offset, visible_rows, last_scan_ms, error) &&
+                    !error.empty()) {
+                    std::cout << "=== POPUP navigation_error ===\nmessage: "
+                              << text(Text::NavigationError) << error
+                              << "\n=== END POPUP ===\n";
+                    popup_handled = true;
+                }
+                break;
+            }
+            case 0x10002: {
+                const std::string value = event_line.size() > 3 ? event_line.substr(3) : std::string();
+                std::string error;
+                if (value.empty() || !navigate_to_root(std::filesystem::u8path(value), current_path,
+                    expanded_dirs, page_size, entries, scan_result, selected, scroll_offset,
+                    visible_rows, last_scan_ms, {}, error)) {
+                    if (error.empty()) error = std::make_error_code(std::errc::invalid_argument).message();
+                    std::cout << "=== POPUP navigation_error ===\nmessage: "
+                              << text(Text::NavigationError) << error
+                              << "\n=== END POPUP ===\n";
+                    popup_handled = true;
+                }
+                break;
+            }
             case KEY_UP:
             case 'k':
                 if (selected > 0) selected--;
@@ -749,6 +876,49 @@ int main(int argc, char* argv[]) {
                 need_refresh = true;
                 refresh_next_scan = true;
                 break;
+            case '\n':
+            case KEY_ENTER:
+                if (!entries.empty() && selected >= 0 && selected < static_cast<int>(entries.size())) {
+                    const auto entry = entries[selected];
+                    if (entry.type == "[DIR] ") {
+                        std::string error;
+                        if (!navigate_to_root(entry.full_path, current_path, expanded_dirs, page_size,
+                            entries, scan_result, selected, scroll_offset, visible_rows,
+                            last_scan_ms, {}, error))
+                            confirm_popup(std::string(text(Text::NavigationError)) + error);
+                    } else if (entry.type == "[RESTO_NEXT]") {
+                        expand_resto(entry.full_path);
+                        need_refresh = true;
+                        select_first_owner = entry.full_path;
+                    } else if (entry.type == "[RESTO_PREV]") {
+                        prev_resto(entry.full_path);
+                        need_refresh = true;
+                        select_last_owner = entry.full_path;
+                    }
+                }
+                break;
+            case KEY_BACKSPACE:
+            case 8:
+            case 127: {
+                std::string error;
+                if (!navigate_to_parent(current_path, expanded_dirs, page_size, entries,
+                    scan_result, selected, scroll_offset, visible_rows, last_scan_ms, error) &&
+                    !error.empty())
+                    confirm_popup(std::string(text(Text::NavigationError)) + error);
+                break;
+            }
+            case 'o':
+            case 'O': {
+                std::string value;
+                if (prompt_for_path(value)) {
+                    std::string error;
+                    if (!navigate_to_root(std::filesystem::u8path(value), current_path,
+                        expanded_dirs, page_size, entries, scan_result, selected, scroll_offset,
+                        visible_rows, last_scan_ms, {}, error))
+                        confirm_popup(std::string(text(Text::NavigationError)) + error);
+                }
+                break;
+            }
             case KEY_UP:
             case 'k':
                 if (selected > 0) selected--;

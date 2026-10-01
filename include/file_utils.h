@@ -36,6 +36,7 @@ struct ScanResult {
 struct ScanOptions {
     FileSizeReader file_size_reader;
     std::function<std::error_code(const std::filesystem::path&, const std::string&)> error_injector;
+    bool reset_pagination = false;
 };
 
 std::vector<EntryInfo> get_directory_entries(const std::filesystem::path& path = ".", int depth = 0);

@@ -107,7 +107,10 @@ Each line is one event:
 | `b` | b | Open bar color popup (logged only) |
 | `y` | y/Y | Confirm popup |
 | `n` | n/N | Cancel popup |
-| `ENTER` | Enter | Confirm popup (same as `y`) |
+| `ENTER` | Enter | Enter a selected directory or activate a page row; confirms an open popup |
+| `BACKSPACE` | Backspace | Return to the parent directory |
+| `CD <path>` | Change directory | `path` is the complete literal UTF-8 remainder, relative to `current_path` unless absolute |
+| `o` / `O` | Open path dialog | Interactive only; accepts relative or absolute paths and Escape cancels |
 | `r` / `R` / `REFRESH` | Refresh | Clear cached sizes and rescan the current root |
 | `COLOR red blue` | Color setting | Save foreground/background using canonical English names |
 | `w` / `W` | Warnings | Show scan diagnostics (interactive); headless prints a diagnostic popup record |

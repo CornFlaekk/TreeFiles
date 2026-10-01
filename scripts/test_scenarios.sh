@@ -430,7 +430,25 @@ wait "$PAGE_PROC_PID"
 check "last-page refresh session exits cleanly" "$?" '^0$'
 
 echo ""
-echo "=== Scenario 16: Language selection ==="
+echo "=== Scenario 16: Root navigation ==="
+nav_root="$TEST_DIR/navigation-ñ"
+space_name="folder with spaces ñ"
+mkdir -p "$nav_root/sub" "$nav_root/$space_name"
+printf '12345678901234567890' > "$nav_root/sub/deep.txt"
+printf xx > "$nav_root/$space_name/inside.txt"
+printf x > "$nav_root/root.txt"
+output=$(printf 'ENTER\nBACKSPACE\nCD %s\nCD missing directory\nBACKSPACE\nENTER\nENTER\nq\n' "$space_name" | "$BINARY" --headless "$nav_root")
+check "Enter changes root to the selected directory" "$(extract_frame "$output" 1)" "current_path: $nav_root/sub"
+check "Backspace returns to the parent root" "$(extract_frame "$output" 2)" "current_path: $nav_root"
+check "Backspace selects the directory returned from" "$(extract_frame "$output" 2)" '>>> \[DIR\]  sub'
+check "CD accepts a relative Unicode path with spaces" "$(extract_frame "$output" 3)" "current_path: $nav_root/$space_name"
+check "invalid CD reports a path error" "$output" 'POPUP navigation_error'
+check "failed CD keeps the previous root" "$(extract_frame "$output" 4)" "current_path: $nav_root"
+check "Enter reopens the selected directory" "$(extract_frame "$output" 5)" "current_path: $nav_root/$space_name"
+check "Enter on a file does not launch or navigate" "$(extract_frame "$output" 6)" "current_path: $nav_root/$space_name"
+
+echo ""
+echo "=== Scenario 17: Language selection ==="
 setup_bigdir
 output=$(run_headless_bigdir "q")
 check "English is the default language" "$(extract_frame "$output" 0)" 'language: en'
@@ -446,7 +464,7 @@ for argument in "--lang" "--lang=" "--lang=fr"; do
 done
 
 echo ""
-echo "=== Scenario 16: Persistent colors ==="
+echo "=== Scenario 18: Persistent colors ==="
 output=$(run_headless_bigdir $'COLOR red blue\nq')
 check "color selection saves configuration" "$output" 'ACTION colors_saved'
 check "foreground applies immediately" "$(extract_frame "$output" 1)" 'bar_fg: 1'
@@ -467,7 +485,7 @@ check "invalid saved color falls back" "$(extract_frame "$output" 0)" 'bar_fg: 0
 check "valid saved field is preserved" "$(extract_frame "$output" 0)" 'bar_bg: 6'
 
 echo ""
-echo "=== Scenario 17: Scan diagnostics and safe links ==="
+echo "=== Scenario 19: Scan diagnostics and safe links ==="
 setup
 output=$(run_headless $'W\nq')
 check "headless W opens scan diagnostics" "$output" "POPUP scan_diagnostics"

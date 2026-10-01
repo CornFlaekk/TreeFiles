@@ -13,6 +13,7 @@ int footer_height(int cols);
 void print_directory_entries(const std::vector<EntryInfo>& entries, int selected, int scroll_offset, int visible_rows, int total_entries, int start_row = 1, int start_col = 2);
 bool confirm_popup(const std::string& message);
 void show_scan_diagnostics(const ScanResult& result);
+bool prompt_for_path(std::string& utf8_path);
 std::pair<int, int> bar_color_selection_popup(int foreground, int background);
 std::string format_scan_time(double ms);
 void show_loading_animation(std::atomic<bool>& loading, std::atomic<bool>& started);

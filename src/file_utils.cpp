@@ -194,10 +194,10 @@ static void append_directory(const fs::path& path,
                        + (all_entries.size() % page_capacity != 0);
     if (total_pages == 0) total_pages = 1;
 
-    int page = resto_state.resto_page[path];
+    int page = options.reset_pagination ? 0 : resto_state.resto_page[path];
     if (page < 0 || static_cast<size_t>(page) >= total_pages) {
         page = 0;
-        resto_state.resto_page[path] = 0;
+        if (!options.reset_pagination) resto_state.resto_page[path] = 0;
     }
 
     const size_t start_idx = static_cast<size_t>(page) * page_capacity;
