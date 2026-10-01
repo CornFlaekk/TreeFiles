@@ -7,6 +7,38 @@ TreeFiles is a CLI tool for easy directory space allocation visualization.
 The same C++17 sources support native Windows and Linux. Windows uses PDCurses
 and the system's default file associations; Linux uses ncurses and `xdg-open`.
 
+## Download and run
+
+The [GitHub releases page](https://github.com/CornFlaekk/TreeFiles/releases) hosts
+Windows x64 and Linux x64 packages for each published version. Download the
+package for your platform and its `.sha256` file. Packages include the executable,
+this guide, the demonstration and third-party notices.
+
+On Windows, extract `treefiles-windows-x64.zip` and run from PowerShell:
+
+~~~powershell
+Get-FileHash .\treefiles-windows-x64.zip -Algorithm SHA256
+Expand-Archive .\treefiles-windows-x64.zip -DestinationPath .\TreeFiles
+.\TreeFiles\treefiles.exe "$env:USERPROFILE\Documents"
+~~~
+
+Compare the SHA-256 result with `treefiles-windows-x64.zip.sha256`. The executable
+requires no compiler, WSL or extra runtime DLLs. Add its directory to your own
+PATH if you want to run `treefiles.exe` from any folder.
+
+On Debian/Ubuntu, install the runtime libraries, verify the archive and extract it:
+
+~~~bash
+sudo apt-get install libncursesw6 libstdc++6 xdg-utils
+sha256sum --check treefiles-linux-x64.tar.gz.sha256
+mkdir -p TreeFiles
+tar -xzf treefiles-linux-x64.tar.gz -C TreeFiles
+./TreeFiles/treefiles ~/Documents
+~~~
+
+The Linux package requires glibc 2.35 or newer. For an older distribution or
+another architecture, build from source using the instructions below.
+
 ## Windows development (PowerShell)
 
 Clone the repository and run:
@@ -66,6 +98,19 @@ The Makefile is for Linux; use CMake or the PowerShell scripts on Windows.
 
 ## Usage
 
+~~~text
+treefiles [--headless] [--page-size N] [--lang en|es] [directory]
+~~~
+
+| Option | Behavior |
+|--------|----------|
+| `directory` | Directory to inspect; defaults to the current directory |
+| `--page-size N` / `--page-size=N` | Files and directories per page, default 30 |
+| `--lang en` / `--lang es` | Interface language; English is the default |
+| `--headless` | Read events from stdin and print structured frames |
+| `--help`, `-h` | Show command-line help |
+| `--version` | Show the application version |
+
 Pass a directory as the optional argument; the default is the current directory.
 Quote paths containing spaces. Use the arrows to select, `E` to expand/collapse,
 `N`/`P` for pagination, Space to open, Delete to delete after confirmation,
@@ -94,6 +139,103 @@ This option works in both interactive and headless mode. Use `--help` for usage.
 ./build/linux-debug/treefiles --page-size 10 .
 ```
 
+Entries are sorted by size, largest first, and then by name. Expanding a folder
+shows its children in the tree. The size bar is relative to the entries displayed
+at that level. Pagination and scrolling are independent: a large page can still
+be scrolled to fit the terminal.
+
+### Keyboard shortcuts
+
+| Key | Action |
+|-----|--------|
+| Up / `k` | Move up |
+| Down / `j` | Move down |
+| Right / `l` | Expand a directory; advance a selected next-page row |
+| Left / `h` | Fold a directory; from a child, select and fold its parent |
+| `g` / `G` | Select the first / last row of the current tree |
+| `E` | Toggle directory expansion or activate a pagination row |
+| `N` / `P` | Next / previous page of the selected directory |
+| Space | Open with the system's default application |
+| Delete | Delete the selected file or directory after confirmation |
+| `B` | Choose the bar's background and text colors |
+| `Q` | Quit |
+
+In the color picker, use arrows or `j/k`, Enter to confirm each color and Escape
+to cancel. The picker starts with the current colors. In delete confirmations,
+use left/right or `h/l` to select, Enter to confirm, or `y/n` to answer directly.
+
+### Language
+
+English is the default. Select Spanish for a session with:
+
+~~~powershell
+.\build\windows-debug\treefiles.exe --lang es --page-size 10 .
+~~~
+
+`--lang=es` also works. The language covers the footer, page labels, prompts,
+color picker, loading indicator and command-line help. Headless protocol keys
+such as `selected_index` remain stable; the `language` field identifies the
+selected language. Unsupported language codes exit with code 2.
+
+### Saved colors
+
+Confirm both colors with `B` to save them automatically for the next session.
+Canceling the picker keeps the current configuration. Settings are per user:
+
+| Platform | Configuration file |
+|----------|--------------------|
+| Windows | `%LOCALAPPDATA%\TreeFiles\config.ini` |
+| Linux | `$XDG_CONFIG_HOME/treefiles/config.ini`, or `~/.config/treefiles/config.ini` |
+
+The file uses canonical English color names:
+
+~~~ini
+foreground=black
+background=yellow
+~~~
+
+Supported names are `black`, `red`, `green`, `yellow`, `blue`, `magenta`, `cyan`
+and `white`. Missing or invalid fields use their defaults. Remove the file to
+reset the colors. Saving uses a temporary file and replaces the old file only
+after the write succeeds; a failed save reports an error.
+
+Set `TREEFILES_CONFIG` to a different file for portable use or isolated tests:
+
+~~~powershell
+$env:TREEFILES_CONFIG = "$PWD\colors.ini"
+.\build\windows-debug\treefiles.exe .
+~~~
+
+### Headless use and tests
+
+Pipe one event per line. Arrow events use `UP`, `DOWN`, `LEFT` and `RIGHT`;
+`SPACE`, `DELETE` and `ENTER` represent those keys. Letter shortcuts work as
+in the interactive interface. `COLOR foreground background` applies and saves
+colors; `B` only logs the available choices in headless mode.
+
+~~~powershell
+'COLOR white blue', 'j', 'l', 'q' |
+    .\build\windows-debug\treefiles.exe --headless --page-size 10 .
+~~~
+
+Frames contain the current path, language, page size, pagination, selection,
+scrolling, expansion, colors and entry list. Headless opening logs an action;
+confirmed deletion still removes files. Exit codes are 0 on success, 1 for an
+invalid directory and 2 for invalid command-line options.
+
+## Troubleshooting
+
+- If Windows blocks local scripts, use the process-scoped execution policy
+  shown above. Run the build from PowerShell in Windows Terminal or VS Code.
+- If the first Windows build cannot download dependencies, check internet
+  access and rerun it. Downloads are checksum-verified and cached in `.tools/`.
+- If a Linux package reports a missing ncurses library, install `libncursesw6`.
+  A glibc version error requires building from source on your distribution.
+- If file opening fails on Linux, install `xdg-utils` and run within a desktop
+  session. Windows uses the registered file association.
+- If colors cannot be saved, check that the configuration directory is writable
+  or set `TREEFILES_CONFIG` to a writable file.
+
 ## Releases
 
 GitHub Actions builds and tests Windows x64 and Linux x64 on pushes and pull
@@ -106,6 +248,12 @@ After **both** platforms pass, the workflow attaches:
 
 The workflow must be present in the release's tagged commit. A failed build
 prevents the upload job; rerun the failed workflow after resolving the problem.
+
+For the first version, prepare a draft release named `v0.1.0` targeting `main`.
+Merge the feature PR and wait for both platform checks before publishing the
+draft. Publishing triggers the release workflow, which verifies the package
+checksums and attaches both platforms. Downloadable archives are also available
+as workflow artifacts before publication.
 The Linux package is built on Ubuntu 22.04 and needs glibc 2.35 or newer and
 the ncurses wide-character and C++ runtimes (`libncursesw6` and `libstdc++6`
 on Ubuntu 22.04 or newer).

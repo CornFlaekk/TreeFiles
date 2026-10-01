@@ -19,7 +19,11 @@ TreeFiles/
 ├── .gitignore
 ├── include/
 │   ├── file_utils.h           # EntryInfo struct, file system functions
-│   └── ui_utils.h             # TUI rendering functions
+│   ├── ui_utils.h             # TUI rendering functions
+│   ├── localization.h         # English/Spanish string catalog
+│   ├── settings.h             # Saved bar colors
+│   ├── platform_utils.h       # Windows/Linux helpers and config location
+│   └── version.h              # Application version
 ├── src/
 │   ├── main.cpp               # Entry point: main loop, keyboard handling
 │   ├── file_utils.cpp         # Directory traversal, size calc, tree building
@@ -27,7 +31,9 @@ TreeFiles/
 ├── tests/
 │   ├── test_human_readable_size.cpp
 │   ├── test_build_tree.cpp
-│   └── test_pagination.cpp
+│   ├── test_pagination.cpp
+│   ├── test_settings.cpp
+│   └── test_localization.cpp
 ├── scripts/
 │   ├── run_interactive.sh     # tmux-based interactive testing
 │   ├── test_scenarios.sh      # Headless integration test scenarios
@@ -89,16 +95,19 @@ Each line is one event:
 | Line | Key | Description |
 |------|-----|-------------|
 | `UP` | Arrow Up | Move selection up |
+| `j` / `k` | Vim navigation | Move down / up |
+| `h` / `l` | Vim folding | Fold / expand directory |
+| `g` / `G` | Vim position | First / last row |
 | `DOWN` | Arrow Down | Move selection down |
 | `SPACE` | Space | Open file (logged, not executed) |
 | `e` | e/E | Expand/collapse directory or [RESTO] |
 | `DELETE` | Delete | Trigger delete confirmation popup |
 | `q` | q/Q | Quit |
-| `CTRL_H` | Ctrl+H | Toggle help box |
 | `b` | b | Open bar color popup (logged only) |
 | `y` | y/Y | Confirm popup |
 | `n` | n/N | Cancel popup |
 | `ENTER` | Enter | Confirm popup (same as `y`) |
+| `COLOR red blue` | Color setting | Save foreground/background using canonical English names |
 
 Lines starting with `#` are comments and ignored. Empty lines are skipped.
 
@@ -121,7 +130,7 @@ message: Delete "foo.txt"?
 Each frame contains:
 - `current_path`, `selected_index`, `scroll_offset`, `visible_rows`
 - `page_size` (default 30; configured with `--page-size N` in either mode)
-- `show_help` (true/false)
+- `language` (default en; selected with `--lang en|es`)
 - `expanded_dirs` set
 - `last_scan_ms`, `bar_fg`, `bar_bg`
 - `entries:` list with index, marker (`>>>` for selected), indent, type, name, size, percentage, and a proportional bar using `█`/`░` (40 chars wide)
@@ -155,7 +164,7 @@ main.cpp (event loop)
   ├── print_directory_entries() → ui_utils.cpp   (renders bars + text)
   ├── confirm_popup()         → ui_utils.cpp     (modal yes/no)
   ├── bar_color_selection_popup() → ui_utils.cpp (color picker)
-  ├── draw_help_box()         → ui_utils.cpp     (bottom help bar)
+  ├── draw_footer()           → ui_utils.cpp     (keyboard shortcuts)
   └── show_loading_animation() → ui_utils.cpp    (async loading spinner)
 ```
 
@@ -182,7 +191,6 @@ struct EntryInfo {
 | `entries` | vector<EntryInfo> | Current flat list of visible entries |
 | `expanded_dirs` | set<path> | Which directories are expanded |
 | `need_refresh` | bool | Force rebuild on next iteration |
-| `show_help` | bool | Help box visibility |
 | `bar_fg`/`bar_bg` | int | Bar color pair (ncurses color constants) |
 
 ### Color Pairs
@@ -198,6 +206,8 @@ struct EntryInfo {
 - **Error handling:** Try/catch for filesystem operations, return 0/bool for failures.
 - **Thread safety:** `std::mutex` guards the directory size cache. `std::atomic<bool>` for loading flags.
 - **Dependencies:** C++17 standard library + the platform's curses backend. Keep platform-specific APIs in `platform_utils.cpp`.
+- **Localization:** All UI strings go through `localization.h`. English is the default; Spanish is selected with `--lang es`. Keep headless protocol keys and persisted color names stable.
+- **Configuration:** `settings.cpp` reads/writes colors, replacing the config atomically through `platform_utils.cpp`. Always set `TREEFILES_CONFIG` to an owned fixture in integration tests.
 - **Paths:** Keep filesystem paths as `std::filesystem::path`; use `u8string()` for display and `u8path()` for UTF-8 input. Windows arguments come from the wide-character command line.
 - **Line endings:** `.gitattributes` enforces LF so Linux scripts work after a Windows checkout.
 

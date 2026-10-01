@@ -4,6 +4,7 @@ set -euo pipefail
 BINARY="${TREEFILES_BINARY:-./treefiles}"
 HEADLESS="--headless"
 TEST_DIR="/tmp/treefiles_test_integration"
+export TREEFILES_CONFIG="$TEST_DIR/.settings/config.ini"
 PASS=0
 FAIL=0
 
@@ -231,10 +232,10 @@ run_headless_bigdir() {
 setup_bigdir
 output=$(run_headless_bigdir "q")
 f0=$(extract_frame "$output" 0)
-check "nav Siguiente appears for 50 files"     "$f0" "Siguiente"
-check_not "no Anterior on page 0"               "$f0" "Anterior"
+check "nav Next appears for 50 files"     "$f0" "Next"
+check_not "no Previous on page 0"               "$f0" "Previous"
 # 30 files + 1 nav = 31 entries, index 30 is nav
-check "entry index 30 is nav" "$f0" " 30:.*---.*Siguiente"
+check "entry index 30 is nav" "$f0" " 30:.*---.*Next"
 
 # Test n key advances to page 1
 setup_bigdir
@@ -242,8 +243,8 @@ output=$(run_headless_bigdir "n
 q")
 f0=$(extract_frame "$output" 0)
 f1=$(extract_frame "$output" 1)
-check "after n: Anterior present"              "$f1" "Anterior"
-check_not "after n: no Siguiente (last page)"   "$f1" "Siguiente"
+check "after n: Previous present"              "$f1" "Previous"
+check_not "after n: no Next (last page)"   "$f1" "Next"
 check "after n: selected on first content"      "$f1" "selected_index: 1"
 
 # Test p key returns to page 0
@@ -252,16 +253,16 @@ output=$(run_headless_bigdir "n
 p
 q")
 f2=$(extract_frame "$output" 2)
-check "after p: Siguiente back"                "$f2" "Siguiente"
-check_not "after p: no Anterior"               "$f2" "Anterior"
+check "after p: Next back"                "$f2" "Next"
+check_not "after p: no Previous"               "$f2" "Previous"
 
 # Test p on page 0 does nothing (no crash)
 setup_bigdir
 output=$(run_headless_bigdir "p
 q")
 f1=$(extract_frame "$output" 1)
-check "p on page 0: still page 0" "$f1" "Siguiente"
-check_not "p on page 0: no Anterior" "$f1" "Anterior"
+check "p on page 0: still page 0" "$f1" "Next"
+check_not "p on page 0: no Previous" "$f1" "Previous"
 
 echo ""
 echo "=== Scenario 12: Configurable page size ==="
@@ -302,7 +303,7 @@ for size in 50 2147483647; do
     output=$(run_headless_bigdir "q" --page-size "$size")
     f0=$(extract_frame "$output" 0)
     check "page size $size includes all files" "$f0" "total_entries: 50"
-    check_not "page size $size needs no next marker" "$f0" "Siguiente"
+    check_not "page size $size needs no next marker" "$f0" "Next"
 done
 
 output=$(run_headless $'e\nn\nq' --page-size 7)
@@ -329,6 +330,8 @@ for arguments in "--page-size" "--page-size=" "--page-size 0" "--page-size -1" \
 done
 output=$("$BINARY" --help)
 check "CLI help documents page size" "$output" 'page-size N'
+output=$("$BINARY" --version)
+check "CLI reports the release version" "$output" 'TreeFiles 0.1.0'
 if output=$("$BINARY" --headless --page-sze 7 </dev/null 2>&1); then
     status=0
 else
@@ -336,6 +339,63 @@ else
 fi
 check "unknown option exit" "$status" '^2$'
 check "unknown option message" "$output" 'Unknown option'
+
+echo ""
+echo "=== Scenario 14: Vim navigation ==="
+setup
+output=$(run_headless $'j\nk\nk\nG\ng\nq')
+check "Vim j moves down" "$(extract_frame "$output" 1)" 'selected_index: 1'
+check "Vim k stops at first entry" "$(extract_frame "$output" 3)" 'selected_index: 0'
+check "Vim G selects last entry" "$(extract_frame "$output" 4)" 'selected_index: 2'
+check "Vim g selects first entry" "$(extract_frame "$output" 5)" 'selected_index: 0'
+output=$(run_headless $'l\nl\nj\nh\nq')
+check "Vim l expands directory" "$(extract_frame "$output" 1)" 'big.txt'
+check "Vim l keeps directory open" "$(extract_frame "$output" 2)" 'big.txt'
+check_not "Vim h from child folds parent" "$(extract_frame "$output" 4)" 'big.txt'
+check "Vim h selects folded parent" "$(extract_frame "$output" 4)" 'selected_index: 0'
+output=$(run_headless $'RIGHT\nLEFT\nq')
+check "right arrow expands" "$(extract_frame "$output" 1)" 'big.txt'
+check_not "left arrow folds" "$(extract_frame "$output" 2)" 'big.txt'
+mkdir -p "$TEST_DIR/empty"
+output=$(printf 'j\nk\nh\nl\ng\nG\nq\n' | "$BINARY" --headless "$TEST_DIR/empty")
+check "Vim keys are safe on empty directory" "$(extract_frame "$output" 7)" 'total_entries: 0'
+
+echo ""
+echo "=== Scenario 15: Language selection ==="
+setup_bigdir
+output=$(run_headless_bigdir "q")
+check "English is the default language" "$(extract_frame "$output" 0)" 'language: en'
+check "default navigation is English" "$(extract_frame "$output" 0)" 'Next'
+output=$(run_headless_bigdir "q" --lang=es)
+check "Spanish language option" "$(extract_frame "$output" 0)" 'language: es'
+check "Spanish navigation is translated" "$(extract_frame "$output" 0)" 'Siguiente'
+output=$("$BINARY" --help --lang es)
+check "help follows language regardless of option order" "$output" 'Uso:'
+for argument in "--lang" "--lang=" "--lang=fr"; do
+    if output=$("$BINARY" "$argument" </dev/null 2>&1); then status=0; else status=$?; fi
+    check "invalid language: $argument" "$status" '^2$'
+done
+
+echo ""
+echo "=== Scenario 16: Persistent colors ==="
+output=$(run_headless_bigdir $'COLOR red blue\nq')
+check "color selection saves configuration" "$output" 'ACTION colors_saved'
+check "foreground applies immediately" "$(extract_frame "$output" 1)" 'bar_fg: 1'
+check "background applies immediately" "$(extract_frame "$output" 1)" 'bar_bg: 4'
+output=$(run_headless_bigdir "q")
+check "foreground survives restart" "$(extract_frame "$output" 0)" 'bar_fg: 1'
+check "background survives restart" "$(extract_frame "$output" 0)" 'bar_bg: 4'
+output=$(run_headless_bigdir $'COLOR white black\nq')
+output=$(run_headless_bigdir $'COLOR purple blue\nq')
+check "new foreground replaces old config" "$(extract_frame "$output" 0)" 'bar_fg: 7'
+check "new background replaces old config" "$(extract_frame "$output" 0)" 'bar_bg: 0'
+check "invalid color reports an error" "$output" 'Invalid COLOR event'
+check "invalid color leaves foreground unchanged" "$(extract_frame "$output" 1)" 'bar_fg: 7'
+check "invalid color leaves background unchanged" "$(extract_frame "$output" 1)" 'bar_bg: 0'
+printf 'foreground=invalid\nbackground=cyan\n' > "$TREEFILES_CONFIG"
+output=$(run_headless_bigdir "q")
+check "invalid saved color falls back" "$(extract_frame "$output" 0)" 'bar_fg: 0'
+check "valid saved field is preserved" "$(extract_frame "$output" 0)" 'bar_bg: 6'
 
 echo ""
 # ============================================================

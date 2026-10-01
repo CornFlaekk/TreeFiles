@@ -233,7 +233,7 @@ void test_labels_no_old_format() {
     bool found_new_next = false;
     bool found_old_label = false;
     for (const auto& e : entries) {
-        if (e.type == "[RESTO_NEXT]" && e.name.find("Siguiente") != std::string::npos)
+        if (e.type == "[RESTO_NEXT]" && e.name.find("Next") != std::string::npos)
             found_new_next = true;
         if (e.name.find("Pag ") != std::string::npos)
             found_old_label = true;

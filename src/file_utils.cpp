@@ -1,4 +1,5 @@
 #include "file_utils.h"
+#include "localization.h"
 #include <sstream>
 #include <iomanip>
 #include <algorithm>
@@ -9,7 +10,7 @@
 #include <stdexcept>
 
 std::string human_readable_size(std::uintmax_t bytes) {
-    const char* sizes[] = {"bytes", "KB", "MB", "GB", "TB"};
+    const char* sizes[] = {text(Text::Bytes), "KB", "MB", "GB", "TB"};
     int order = 0;
     double size = static_cast<double>(bytes);
     while (size >= 1024 && order < 4) {
@@ -115,7 +116,7 @@ void build_tree_entries(const std::filesystem::path& path,
 
     // Botón retroceder página si no estamos en la primera
     if (total_pages > 1 && page > 0) {
-        std::string label = "\u25c2\u25c2 Anterior (" + std::to_string(page + 1) + "/" + std::to_string(total_pages) + ")";
+        std::string label = std::string("\u25c2\u25c2 ") + text(Text::Previous) + " (" + std::to_string(page + 1) + "/" + std::to_string(total_pages) + ")";
         out.push_back({"[RESTO_PREV]", label, path, 0, depth, false});
     }
 
@@ -129,7 +130,7 @@ void build_tree_entries(const std::filesystem::path& path,
 
     // Botón avanzar página si hay más
     if (static_cast<size_t>(page) + 1 < total_pages) {
-        std::string label = "\u25b8\u25b8 Siguiente (" + std::to_string(page + 1) + "/" + std::to_string(total_pages) + ")";
+        std::string label = std::string("\u25b8\u25b8 ") + text(Text::Next) + " (" + std::to_string(page + 1) + "/" + std::to_string(total_pages) + ")";
         out.push_back({"[RESTO_NEXT]", label, path, 0, depth, false});
     }
 }

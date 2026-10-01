@@ -5,6 +5,7 @@
 #include <vector>
 #include "ui_utils.h"
 #include "platform_utils.h"
+#include "localization.h"
 #include <array>
 #include <tuple>
 
@@ -50,7 +51,7 @@ void draw_header(int cols, const std::filesystem::path& current_path, int page, 
     // Right: page info if applicable
     if (total_pages > 1) {
         char buf[32];
-        snprintf(buf, sizeof(buf), "Pag %d/%d", page + 1, total_pages);
+        snprintf(buf, sizeof(buf), "%s %d/%d", text(Text::Page), page + 1, total_pages);
         int right_x = cols - 3 - (int)strlen(buf);
         if (right_x > path_x + 2) {
             mvaddch(0, right_x - 2, ACS_VLINE);
@@ -60,14 +61,14 @@ void draw_header(int cols, const std::filesystem::path& current_path, int page, 
 }
 
 struct FooterSection {
-    const char* name;
-    std::vector<const char*> bindings;
+    Text name;
+    std::vector<Text> bindings;
 };
 
 static const FooterSection sections[] = {
-    {"Navegar",   {"[\u2191\u2193] mover", "[N/P] pag"}},
-    {"Acciones",  {"[E] exp", "[Spc] abrir", "[Del] borrar"}},
-    {"Sistema",   {"[B] color", "[Q] salir"}},
+    {Text::Navigation, {Text::MoveBinding, Text::PageBinding}},
+    {Text::Actions, {Text::ExpandBinding, Text::OpenBinding, Text::DeleteBinding}},
+    {Text::System, {Text::ColorBinding, Text::QuitBinding}},
 };
 
 // Build a flat string of bindings for a section
@@ -75,26 +76,31 @@ static std::string section_bindings(const FooterSection& sec) {
     std::string s;
     for (size_t i = 0; i < sec.bindings.size(); ++i) {
         if (i > 0) s += " ";
-        s += sec.bindings[i];
+        s += text(sec.bindings[i]);
     }
     return s;
 }
 
+static bool wide_footer(int cols) {
+    if (cols <= 80) return false;
+    for (const auto& sec : sections)
+        if (static_cast<int>(section_bindings(sec).size()) > (cols - 4) / 3) return false;
+    return true;
+}
+
 static int count_content_lines(int cols) {
-    if (cols > 80) return 2; // wide: headers + bindings
+    if (wide_footer(cols)) return 2;
 
     // Narrow: one line per section (+ wrapping if needed)
     int lines = 0;
     for (auto& sec : sections) {
-        std::string line = sec.name + std::string(": ");
-        line += section_bindings(sec);
-        // Wrap if too long
-        int max_w = cols - 4;
+        const int max_w = std::max(1, cols - 4);
+        const int header_width = static_cast<int>(std::strlen(text(sec.name))) + 2;
         lines++;
-        int remaining = (int)line.size() - max_w;
+        int remaining = static_cast<int>(section_bindings(sec).size()) - std::max(1, max_w - header_width);
         while (remaining > 0) {
             lines++;
-            remaining -= max_w;
+            remaining -= std::max(1, max_w - 2);
         }
     }
     return lines;
@@ -115,12 +121,12 @@ void draw_footer(int rows, int cols, int selected, int total_entries, double las
     char right_buf[64];
     std::string scan_str = format_scan_time(last_scan_ms);
     if (total_entries > 0) {
-        snprintf(right_buf, sizeof(right_buf), " %d/%d  Scan: %s ", selected + 1, total_entries, scan_str.c_str());
+        snprintf(right_buf, sizeof(right_buf), " %d/%d  %s: %s ", selected + 1, total_entries, text(Text::Scan), scan_str.c_str());
     } else {
-        snprintf(right_buf, sizeof(right_buf), " Scan: %s ", scan_str.c_str());
+        snprintf(right_buf, sizeof(right_buf), " %s: %s ", text(Text::Scan), scan_str.c_str());
     }
 
-    if (cols > 80) {
+    if (wide_footer(cols)) {
         int row1 = footer_start + 1;
         int row2 = footer_start + 2;
 
@@ -134,7 +140,7 @@ void draw_footer(int rows, int cols, int selected, int total_entries, double las
             int col = 2 + s * (sect_w + 1);
 
             attron(A_BOLD);
-            mvaddstr(row1, col, sections[s].name);
+            mvaddstr(row1, col, text(sections[s].name));
             attroff(A_BOLD);
 
             if (s < 2) {
@@ -154,15 +160,15 @@ void draw_footer(int rows, int cols, int selected, int total_entries, double las
             mvaddch(row, 0, ACS_VLINE);
             mvaddch(row, cols - 1, ACS_VLINE);
 
-            std::string header = sec.name + std::string(": ");
+            std::string header = std::string(text(sec.name)) + ": ";
             attron(A_BOLD);
             mvaddstr(row, 2, header.c_str());
             attroff(A_BOLD);
 
             int hdr_w = (int)header.size();
-            int max_w = cols - 4;
+            int max_w = std::max(1, cols - 4);
             std::string binds = section_bindings(sec);
-            std::string first_line = binds.substr(0, max_w - hdr_w);
+            std::string first_line = binds.substr(0, std::max(1, max_w - hdr_w));
             mvaddstr(row, 2 + hdr_w, first_line.c_str());
 
             size_t pos = first_line.size();
@@ -170,7 +176,7 @@ void draw_footer(int rows, int cols, int selected, int total_entries, double las
                 row++;
                 mvaddch(row, 0, ACS_VLINE);
                 mvaddch(row, cols - 1, ACS_VLINE);
-                std::string remnant = binds.substr(pos, max_w - 2);
+                std::string remnant = binds.substr(pos, std::max(1, max_w - 2));
                 mvaddstr(row, 4, remnant.c_str());
                 pos += remnant.size();
             }
@@ -359,7 +365,7 @@ bool confirm_popup(const std::string& message) {
     box(win, 0, 0);
     mvwprintw(win, 2, 2, "%s", message.c_str());
 
-    const char* options[2] = {" Yes ", " No "};
+    const char* options[2] = {text(Text::Yes), text(Text::No)};
     int selected = 0;
 
     while (true) {
@@ -376,9 +382,9 @@ bool confirm_popup(const std::string& message) {
         wrefresh(win);
 
         int ch = wgetch(win);
-        if (ch == KEY_LEFT || ch == '\t') {
+        if (ch == KEY_LEFT || ch == 'h' || ch == '\t') {
             selected = (selected + 1) % 2;
-        } else if (ch == KEY_RIGHT) {
+        } else if (ch == KEY_RIGHT || ch == 'l') {
             selected = (selected + 1) % 2;
         } else if (ch == '\n' || ch == KEY_ENTER) {
             delwin(win);
@@ -399,12 +405,13 @@ bool confirm_popup(const std::string& message) {
     }
 }
 
-std::pair<int, int> bar_color_selection_popup() {
-    static const std::array<const char*, 8> color_names = {
-        "Negro", "Rojo", "Verde", "Amarillo", "Azul", "Magenta", "Cyan", "Blanco"
+std::pair<int, int> bar_color_selection_popup(int foreground, int background) {
+    const std::array<const char*, 8> color_names = {
+        text(Text::Black), text(Text::Red), text(Text::Green), text(Text::Yellow),
+        text(Text::Blue), text(Text::Magenta), text(Text::Cyan), text(Text::White)
     };
-    int selected_bg = 0;
-    int selected_fg = 0;
+    int selected_bg = background;
+    int selected_fg = foreground;
     int rows, cols;
     getmaxyx(stdscr, rows, cols);
 
@@ -415,7 +422,7 @@ std::pair<int, int> bar_color_selection_popup() {
     keypad(win, TRUE);
 
     box(win, 0, 0);
-    mvwprintw(win, 1, 2, "Color de FONDO barra:");
+    mvwprintw(win, 1, 2, "%s", text(Text::BackgroundColor));
     while (true) {
         for (int i = 0; i < (int)color_names.size(); ++i) {
             if (i == selected_bg) {
@@ -428,15 +435,15 @@ std::pair<int, int> bar_color_selection_popup() {
         }
         wrefresh(win);
         int ch = wgetch(win);
-        if (ch == KEY_UP && selected_bg > 0) selected_bg--;
-        else if (ch == KEY_DOWN && selected_bg < (int)color_names.size() - 1) selected_bg++;
+        if ((ch == KEY_UP || ch == 'k') && selected_bg > 0) selected_bg--;
+        else if ((ch == KEY_DOWN || ch == 'j') && selected_bg < (int)color_names.size() - 1) selected_bg++;
         else if (ch == '\n' || ch == KEY_ENTER) break;
         else if (ch == 27) { delwin(win); touchwin(stdscr); refresh(); return {-1, -1}; }
     }
 
     werase(win);
     box(win, 0, 0);
-    mvwprintw(win, 1, 2, "Color de TEXTO barra:");
+    mvwprintw(win, 1, 2, "%s", text(Text::ForegroundColor));
     while (true) {
         for (int i = 0; i < (int)color_names.size(); ++i) {
             if (i == selected_fg) {
@@ -449,8 +456,8 @@ std::pair<int, int> bar_color_selection_popup() {
         }
         wrefresh(win);
         int ch = wgetch(win);
-        if (ch == KEY_UP && selected_fg > 0) selected_fg--;
-        else if (ch == KEY_DOWN && selected_fg < (int)color_names.size() - 1) selected_fg++;
+        if ((ch == KEY_UP || ch == 'k') && selected_fg > 0) selected_fg--;
+        else if ((ch == KEY_DOWN || ch == 'j') && selected_fg < (int)color_names.size() - 1) selected_fg++;
         else if (ch == '\n' || ch == KEY_ENTER) break;
         else if (ch == 27) { delwin(win); touchwin(stdscr); refresh(); return {-1, -1}; }
     }
@@ -508,7 +515,7 @@ void show_loading_animation(std::atomic<bool>& loading, std::atomic<bool>& start
     started = true;
     WINDOW* win = newwin(win_height, win_width, starty, startx);
     box(win, 0, 0);
-    mvwprintw(win, 1, 3, "Loading");
+    mvwprintw(win, 1, 3, "%s", text(Text::Loading));
     wrefresh(win);
     while (loading) {
         for (int y = 0; y < 3; ++y) {

@@ -1,4 +1,5 @@
 #include "platform_utils.h"
+#include "localization.h"
 #include <cstdlib>
 #include <stdexcept>
 
@@ -59,6 +60,42 @@ std::filesystem::path home_directory() {
 #endif
 }
 
+std::filesystem::path configuration_file() {
+#ifdef _WIN32
+    const wchar_t* override_path = _wgetenv(L"TREEFILES_CONFIG");
+    if (override_path && *override_path) return std::filesystem::path(override_path);
+    const wchar_t* local_app_data = _wgetenv(L"LOCALAPPDATA");
+    if (local_app_data && *local_app_data) return std::filesystem::path(local_app_data) / "TreeFiles" / "config.ini";
+    const auto home = home_directory();
+    return home.empty() ? std::filesystem::path{} : home / "AppData" / "Local" / "TreeFiles" / "config.ini";
+#else
+    const char* override_path = std::getenv("TREEFILES_CONFIG");
+    if (override_path && *override_path) return std::filesystem::u8path(override_path);
+    const char* xdg_config = std::getenv("XDG_CONFIG_HOME");
+    if (xdg_config && *xdg_config && std::filesystem::path(xdg_config).is_absolute())
+        return std::filesystem::u8path(xdg_config) / "treefiles" / "config.ini";
+    const auto home = home_directory();
+    return home.empty() ? std::filesystem::path{} : home / ".config" / "treefiles" / "config.ini";
+#endif
+}
+
+bool replace_file(const std::filesystem::path& source, const std::filesystem::path& target, std::string& error) {
+#ifdef _WIN32
+    if (!MoveFileExW(source.c_str(), target.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
+        error = "Windows error " + std::to_string(GetLastError());
+        return false;
+    }
+#else
+    std::error_code ec;
+    std::filesystem::rename(source, target, ec);
+    if (ec) {
+        error = ec.message();
+        return false;
+    }
+#endif
+    return true;
+}
+
 bool open_path(const std::filesystem::path& path, std::string& error) {
     auto absolute_path = std::filesystem::absolute(path);
 #ifdef _WIN32
@@ -69,7 +106,7 @@ bool open_path(const std::filesystem::path& path, std::string& error) {
     info.lpFile = absolute_path.c_str();
     info.nShow = SW_SHOWNORMAL;
     if (!ShellExecuteExW(&info)) {
-        error = "Cannot open this path (Windows error " + std::to_string(GetLastError()) + ").";
+        error = std::string(text(Text::OpenPathError)) + " (Windows error " + std::to_string(GetLastError()) + ").";
         return false;
     }
 #else
@@ -84,7 +121,7 @@ bool open_path(const std::filesystem::path& path, std::string& error) {
     int result = posix_spawnp(&child, opener, &actions, nullptr, arguments, environ);
     posix_spawn_file_actions_destroy(&actions);
     if (result != 0) {
-        error = "Cannot run xdg-open: " + std::string(std::strerror(result));
+        error = std::string(text(Text::OpenCommandError)) + std::strerror(result);
         return false;
     }
     std::thread([child]() {
