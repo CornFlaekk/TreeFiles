@@ -6,7 +6,7 @@ CXX = g++
 CXXFLAGS = -Wall -Wextra -std=c++17 -Iinclude
 
 # Librerías necesarias
-LIBS = -lncursesw
+LIBS = -lncursesw -pthread
 
 # Directorios
 SRC_DIR = src

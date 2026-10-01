@@ -1,4 +1,5 @@
 #include "file_utils.h"
+#include "test_directory.h"
 #include <cstdio>
 #include <cassert>
 #include <filesystem>
@@ -17,15 +18,16 @@ static int tests_failed = 0;
 #define CHECK(cond) do { if (!(cond)) { printf("FAIL\n"); tests_failed++; return; } } while(0)
 #define PASS() printf("OK\n")
 
-const char* BASE = "/tmp/treefiles_test_pagination";
+static const TestDirectory test_directory("pagination");
+const fs::path BASE = test_directory.path;
 
 void setup_many_files(int count, const char* subdir) {
     fs::remove_all(BASE);
-    fs::create_directories(std::string(BASE) + "/" + subdir);
+    fs::create_directories(BASE / subdir);
     for (int i = 0; i < count; i++) {
         char name[64];
         snprintf(name, sizeof(name), "file_%04d.txt", i);
-        std::string path = std::string(BASE) + "/" + subdir + "/" + name;
+        fs::path path = BASE / subdir / name;
         std::ofstream f(path, std::ios::binary);
         if (f) {
             f.seekp(9);
@@ -54,7 +56,7 @@ void test_no_nav_for_small_dirs() {
     expanded.clear();
 
     std::vector<EntryInfo> entries;
-    build_tree_entries(fs::path(std::string(BASE) + "/small"), expanded, entries, 0, 30);
+    build_tree_entries(fs::path(BASE / "small"), expanded, entries, 0, 30);
 
     CHECK(!has_type(entries, "[RESTO_NEXT]"));
     CHECK(!has_type(entries, "[RESTO_PREV]"));
@@ -72,7 +74,7 @@ void test_next_appears_when_over_max() {
     expanded.clear();
 
     std::vector<EntryInfo> entries;
-    build_tree_entries(fs::path(std::string(BASE) + "/big"), expanded, entries, 0, 30);
+    build_tree_entries(fs::path(BASE / "big"), expanded, entries, 0, 30);
 
     CHECK(has_type(entries, "[RESTO_NEXT]"));
     CHECK(!has_type(entries, "[RESTO_PREV]"));
@@ -90,7 +92,7 @@ void test_expand_resto_shows_page_1() {
     auto& expanded = get_expanded_dirs();
     expanded.clear();
 
-    fs::path dir = std::string(BASE) + "/big";
+    fs::path dir = BASE / "big";
 
     std::vector<EntryInfo> entries;
     build_tree_entries(dir, expanded, entries, 0, 30);
@@ -116,7 +118,7 @@ void test_prev_resto_goes_back() {
     auto& expanded = get_expanded_dirs();
     expanded.clear();
 
-    fs::path dir = std::string(BASE) + "/big";
+    fs::path dir = BASE / "big";
 
     std::vector<EntryInfo> entries;
     build_tree_entries(dir, expanded, entries, 0, 30);
@@ -147,7 +149,7 @@ void test_reset_resto_state() {
     auto& expanded = get_expanded_dirs();
     expanded.clear();
 
-    fs::path dir = std::string(BASE) + "/big";
+    fs::path dir = BASE / "big";
 
     std::vector<EntryInfo> entries;
     build_tree_entries(dir, expanded, entries, 0, 30);
@@ -176,7 +178,7 @@ void test_prev_resto_does_not_go_below_zero() {
     auto& expanded = get_expanded_dirs();
     expanded.clear();
 
-    fs::path dir = std::string(BASE) + "/big";
+    fs::path dir = BASE / "big";
 
     prev_resto(dir);
 
@@ -196,7 +198,7 @@ void test_get_current_page() {
     auto& expanded = get_expanded_dirs();
     expanded.clear();
 
-    fs::path dir = std::string(BASE) + "/big";
+    fs::path dir = BASE / "big";
 
     CHECK(get_current_page(dir) == 0);
 
@@ -221,7 +223,7 @@ void test_labels_no_old_format() {
     auto& expanded = get_expanded_dirs();
     expanded.clear();
 
-    fs::path dir = std::string(BASE) + "/big";
+    fs::path dir = BASE / "big";
 
     std::vector<EntryInfo> entries;
     build_tree_entries(dir, expanded, entries, 0, 30);

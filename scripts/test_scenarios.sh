@@ -1,7 +1,7 @@
 #!/bin/bash
 set -euo pipefail
 
-BINARY="./treefiles"
+BINARY="${TREEFILES_BINARY:-./treefiles}"
 HEADLESS="--headless"
 TEST_DIR="/tmp/treefiles_test_integration"
 PASS=0
@@ -57,9 +57,11 @@ run_headless() {
     echo "$events" | "$BINARY" "$HEADLESS" "$TEST_DIR" 2>&1
 }
 
-echo "Building..."
-make clean > /dev/null 2>&1
-make > /dev/null 2>&1
+if [ -z "${TREEFILES_BINARY:-}" ]; then
+    echo "Building..."
+    make clean > /dev/null 2>&1
+    make > /dev/null 2>&1
+fi
 echo ""
 
 # ============================================================

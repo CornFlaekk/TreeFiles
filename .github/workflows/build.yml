@@ -1,0 +1,95 @@
+name: Build, test and release
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+  workflow_dispatch:
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: ${{ matrix.platform }} x64
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-2022
+            platform: windows
+          - os: ubuntu-22.04
+            platform: linux
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Build and test Windows
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./scripts/build_windows.ps1 -Configuration Release -Test
+
+      - name: Package Windows
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./scripts/package_windows.ps1
+
+      - name: Install Linux dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y g++ cmake ninja-build libncurses-dev
+
+      - name: Build and test Linux
+        if: runner.os == 'Linux'
+        run: |
+          cmake -S . -B build/linux-release -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON
+          cmake --build build/linux-release --parallel
+          ctest --test-dir build/linux-release --output-on-failure
+
+      - name: Package Linux
+        if: runner.os == 'Linux'
+        run: |
+          cmake --install build/linux-release --prefix dist/package/linux
+          tar -C dist/package/linux -czf dist/treefiles-linux-x64.tar.gz .
+          cd dist
+          sha256sum treefiles-linux-x64.tar.gz > treefiles-linux-x64.tar.gz.sha256
+
+      - name: Save packages
+        uses: actions/upload-artifact@v7
+        with:
+          name: treefiles-${{ matrix.platform }}-x64
+          path: |
+            dist/*.zip
+            dist/*.tar.gz
+            dist/*.sha256
+          if-no-files-found: error
+
+  publish:
+    name: Attach both platforms to the release
+    if: github.event_name == 'release'
+    needs: build
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: treefiles-*-x64
+          merge-multiple: true
+          path: packages
+      - name: Verify and upload both packages
+        working-directory: packages
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: |
+          test -f treefiles-windows-x64.zip
+          test -f treefiles-linux-x64.tar.gz
+          sha256sum --check *.sha256
+          gh release upload "$RELEASE_TAG" treefiles-windows-x64.zip treefiles-linux-x64.tar.gz *.sha256 --clobber

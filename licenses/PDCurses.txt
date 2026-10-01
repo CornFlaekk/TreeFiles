@@ -1,0 +1,6 @@
+TreeFiles for Windows links the wincon port of PDCurses 3.9.
+https://github.com/wmcbrine/PDCurses/tree/3.9
+
+The PDCurses core and Windows console port are in the public domain.
+The X11 port and demo programs with separate licenses are not included.
+PDCurses is provided AS IS with NO WARRANTY whatsoever.
