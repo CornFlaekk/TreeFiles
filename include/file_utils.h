@@ -20,9 +20,11 @@ void build_tree_entries(const std::filesystem::path& path,
                         const std::set<std::filesystem::path>& expanded_dirs,
                         std::vector<EntryInfo>& out,
                         int depth = 0,
-                        int max_files = 100);
+                        int max_files = 30);
 
 void clear_dir_size_cache();
 void clear_tree_entries_cache();
 void expand_resto(const std::filesystem::path& path);
 void prev_resto(const std::filesystem::path& path);
+void reset_resto_state();
+int get_current_page(const std::filesystem::path& path);

@@ -55,7 +55,6 @@ std::uintmax_t get_directory_size(const std::filesystem::path& dir_path) {
                 size += sz;
             }
         }
-                    
     } catch (const fs::filesystem_error& ex) {
         // Error al recorrer (demasiados enlaces, permisos, etc.)
         return 0;
@@ -79,22 +78,15 @@ void build_tree_entries(const std::filesystem::path& path,
                         int depth,
                         int max_files) {
     namespace fs = std::filesystem;
-    std::vector<EntryInfo> dirs;
-    std::vector<EntryInfo> files;
-    int other_count = 0;
-    std::uintmax_t other_total_size = 0;
     std::vector<EntryInfo> all_entries;
     for (const auto& entry : fs::directory_iterator(path)) {
         if (entry.is_directory()) {
             std::uintmax_t dir_size = get_directory_size(entry.path());
             bool is_expanded = expanded_dirs.count(entry.path()) > 0;
-            all_entries.push_back({"[DIR] ", entry.path().filename().string(), entry.path(), dir_size, depth, is_expanded});
+            all_entries.push_back({"[DIR] ", entry.path().filename().u8string(), entry.path(), dir_size, depth, is_expanded});
         } else if (entry.is_regular_file()) {
             std::uintmax_t sz = entry.file_size();
-            all_entries.push_back({"[FILE]", entry.path().filename().string(), entry.path(), sz, depth, false});
-        } else {
-            other_count++;
-            other_total_size += 0;
+            all_entries.push_back({"[FILE]", entry.path().filename().u8string(), entry.path(), sz, depth, false});
         }
     }
     // Ordena todo junto por tamaño descendente y nombre
@@ -103,15 +95,25 @@ void build_tree_entries(const std::filesystem::path& path,
         return a.name < b.name;
     });
 
+    int total_pages = ((int)all_entries.size() + max_files - 1) / max_files;
+    if (total_pages == 0) total_pages = 1;
+
     int page = resto_state.resto_page[path];
-    int total_pages = (all_entries.size() + max_files - 1) / max_files;
-    if (page >= total_pages) page = resto_state.resto_page[path] = 0;
+    if (page >= total_pages) {
+        page = 0;
+        resto_state.resto_page[path] = 0;
+    }
+    if (page < 0) {
+        page = 0;
+        resto_state.resto_page[path] = 0;
+    }
+
     int start_idx = page * max_files;
     int end_idx = std::min((int)all_entries.size(), start_idx + max_files);
 
     // Botón retroceder página si no estamos en la primera
     if (total_pages > 1 && page > 0) {
-        std::string label = "[< Página " + std::to_string(page+1) + "/" + std::to_string(total_pages) + "]";
+        std::string label = "\u25c2\u25c2 Anterior (" + std::to_string(page + 1) + "/" + std::to_string(total_pages) + ")";
         out.push_back({"[RESTO_PREV]", label, path, 0, depth, false});
     }
 
@@ -124,30 +126,39 @@ void build_tree_entries(const std::filesystem::path& path,
     }
 
     // Botón avanzar página si hay más
-    if (total_pages > 1 && page < total_pages-1) {
-        std::string label = "[> Página " + std::to_string(page+1) + "/" + std::to_string(total_pages) + "]";
+    if (total_pages > 1 && page < total_pages - 1) {
+        std::string label = "\u25b8\u25b8 Siguiente (" + std::to_string(page + 1) + "/" + std::to_string(total_pages) + ")";
         out.push_back({"[RESTO_NEXT]", label, path, 0, depth, false});
     }
 }
 
-// Llama esto cuando el usuario expanda un [RESTO]
 void expand_resto(const std::filesystem::path& path) {
     resto_state.resto_page[path]++;
 }
 
 void prev_resto(const std::filesystem::path& path) {
-    if (resto_state.resto_page[path] > 0) resto_state.resto_page[path]--;
+    if (resto_state.resto_page[path] > 0)
+        resto_state.resto_page[path]--;
 }
 
 void reset_resto(const std::filesystem::path& path) {
     resto_state.resto_page[path] = 0;
 }
 
+void reset_resto_state() {
+    resto_state.resto_page.clear();
+}
+
+int get_current_page(const std::filesystem::path& path) {
+    auto it = resto_state.resto_page.find(path);
+    return (it != resto_state.resto_page.end()) ? it->second : 0;
+}
+
 // Devuelve el vector plano para mostrar en la UI
 std::vector<EntryInfo> get_directory_entries(const std::filesystem::path& path, int depth) {
     static std::set<std::filesystem::path> expanded_dirs; // Se gestiona desde main
     std::vector<EntryInfo> result;
-    build_tree_entries(path, expanded_dirs, result, depth, 100); // max_files=100
+    build_tree_entries(path, expanded_dirs, result, depth, 30);
     return result;
 }
 
