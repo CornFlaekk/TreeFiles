@@ -22,7 +22,9 @@ const std::array<const char*, text_count> english = {
     "--lang requires en or es.",
     "Unknown option: ", "Use --help for usage.", "Not a readable directory: ",
     "Cannot read color settings: ", "Cannot save color settings: ",
-    "Cannot open this path", "Cannot run xdg-open: ", "bytes", "Invalid COLOR event."
+    "Cannot open this path", "Cannot run xdg-open: ", "bytes", "Invalid COLOR event.",
+    "[W] warnings", "Scan completed with omitted items", "Scan diagnostics", "Press any key",
+    "partial", "unavailable"
 };
 const std::array<const char*, text_count> spanish_text = {
     "Anterior", "Siguiente", "Pag", "Navegar", "Acciones", "Sistema",
@@ -41,7 +43,9 @@ const std::array<const char*, text_count> spanish_text = {
     "--lang requiere en o es.",
     "Opci\u00f3n desconocida: ", "Usa --help para ver la ayuda.", "No se puede leer el directorio: ",
     "No se pueden leer los colores guardados: ", "No se pueden guardar los colores: ",
-    "No se puede abrir esta ruta", "No se puede ejecutar xdg-open: ", "bytes", "Evento COLOR no v\u00e1lido."
+    "No se puede abrir esta ruta", "No se puede ejecutar xdg-open: ", "bytes", "Evento COLOR no v\u00e1lido.",
+    "[W] avisos", "Escaneo terminado con elementos omitidos", "Diagn\u00f3sticos del escaneo", "Pulsa cualquier tecla",
+    "parcial", "no disponible"
 };
 }
 

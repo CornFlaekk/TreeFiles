@@ -212,6 +212,45 @@ try {
     $output = Run-Headless @('q') $bigDirectory
     Check ((Frame $output 0).Contains('bar_fg: 0') -and (Frame $output 0).Contains('bar_bg: 6')) 'invalid saved color falls back without losing valid fields'
 
+    $output = Run-Headless @('W', 'q') $testRoot
+    Check ($output.Contains('POPUP scan_diagnostics')) 'headless W opens scan diagnostics'
+    Check ((Frame $output 0).Contains('scan_status: complete')) 'complete scan status is included in frames'
+
+    $junctionTarget = Join-Path $testRoot 'junction-target'
+    $junctionPath = Join-Path $testRoot 'junction-link'
+    New-Item -ItemType Directory -Path $junctionTarget | Out-Null
+    Write-TestFile (Join-Path $junctionTarget 'keep.txt') 32
+    $junctionCreated = $false
+    try {
+        New-Item -ItemType Junction -Path $junctionPath -Target $junctionTarget | Out-Null
+        $junctionCreated = $true
+    } catch {
+        Write-Host "SKIP: Windows junction fixture unavailable: $($_.Exception.Message)"
+    }
+    if ($junctionCreated) {
+        $output = Run-Headless @('q') $testRoot
+        Check ((Frame $output 0).Contains('[LINK] junction-link')) 'Windows junction is displayed as a link'
+        $output = Run-Headless @('q') $junctionPath
+        Check ((Frame $output 0).Contains('keep.txt')) 'explicit Windows junction root is scanned once'
+        $linkDeleteRoot = Join-Path $testRoot 'link-delete'
+        $linkTarget = Join-Path $linkDeleteRoot 'target'
+        New-Item -ItemType Directory -Path $linkTarget -Force | Out-Null
+        Write-TestFile (Join-Path $linkTarget 'keep.txt') 32
+        $junctionToDelete = Join-Path $linkDeleteRoot 'link'
+        $deleteJunctionCreated = $false
+        try {
+            New-Item -ItemType Junction -Path $junctionToDelete -Target $linkTarget | Out-Null
+            $deleteJunctionCreated = $true
+        } catch {
+            Write-Host "SKIP: Windows junction delete fixture unavailable: $($_.Exception.Message)"
+        }
+        if ($deleteJunctionCreated) {
+            $output = Run-Headless @('G', 'DELETE', 'y', 'q') $linkDeleteRoot
+            Check ($output.Contains('ACTION deleted')) 'deleting a junction is logged as an action'
+            Check (Test-Path -LiteralPath (Join-Path $linkTarget 'keep.txt')) 'deleting a junction keeps its target'
+        }
+    }
+
     Write-Host "Results: $script:checks passed, 0 failed"
 } finally {
     if ($null -eq $oldConfig) { Remove-Item Env:TREEFILES_CONFIG -ErrorAction SilentlyContinue }

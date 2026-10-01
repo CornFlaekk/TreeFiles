@@ -33,7 +33,8 @@ TreeFiles/
 │   ├── test_build_tree.cpp
 │   ├── test_pagination.cpp
 │   ├── test_settings.cpp
-│   └── test_localization.cpp
+│   ├── test_localization.cpp
+│   └── test_scan.cpp
 ├── scripts/
 │   ├── run_interactive.sh     # tmux-based interactive testing
 │   ├── test_scenarios.sh      # Headless integration test scenarios
@@ -108,6 +109,7 @@ Each line is one event:
 | `n` | n/N | Cancel popup |
 | `ENTER` | Enter | Confirm popup (same as `y`) |
 | `COLOR red blue` | Color setting | Save foreground/background using canonical English names |
+| `w` / `W` | Warnings | Show scan diagnostics (interactive); headless prints a diagnostic popup record |
 
 Lines starting with `#` are comments and ignored. Empty lines are skipped.
 
@@ -133,6 +135,7 @@ Each frame contains:
 - `language` (default en; selected with `--lang en|es`)
 - `expanded_dirs` set
 - `last_scan_ms`, `bar_fg`, `bar_bg`
+- `scan_status` (`complete`, `partial` or `failed`), `diagnostics_count` and one `diagnostic_N` record per filesystem issue
 - `entries:` list with index, marker (`>>>` for selected), indent, type, name, size, percentage, and a proportional bar using `█`/`░` (40 chars wide)
 
 ### Optional path argument
@@ -159,6 +162,7 @@ Screenshots are saved to `screenshots/` for visual review. The script starts the
 
 ```
 main.cpp (event loop)
+  ├── scan_tree_entries() → file_utils.cpp (tree plus scan status and filesystem diagnostics)
   ├── build_tree_entries()    → file_utils.cpp   (builds sorted entry list)
   ├── get_directory_size()    → file_utils.cpp   (cached recursive size)
   ├── print_directory_entries() → ui_utils.cpp   (renders bars + text)
@@ -204,6 +208,7 @@ struct EntryInfo {
 - **Naming:** snake_case for functions and variables. PascalCase (actually just capitalized first letter) for structs. Struct members use snake_case.
 - **Types:** Prefer `std::filesystem::path` for paths, `std::uintmax_t` for file sizes.
 - **Error handling:** Try/catch for filesystem operations, return 0/bool for failures.
+- **Scanning:** Use `ScanResult`/`ScanIssue`; never turn a filesystem error into a successful zero-byte size. Do not traverse symlinks or Windows directory junctions.
 - **Thread safety:** `std::mutex` guards the directory size cache. `std::atomic<bool>` for loading flags.
 - **Dependencies:** C++17 standard library + the platform's curses backend. Keep platform-specific APIs in `platform_utils.cpp`.
 - **Localization:** All UI strings go through `localization.h`. English is the default; Spanish is selected with `--lang es`. Keep headless protocol keys and persisted color names stable.

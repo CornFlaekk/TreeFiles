@@ -398,6 +398,28 @@ check "invalid saved color falls back" "$(extract_frame "$output" 0)" 'bar_fg: 0
 check "valid saved field is preserved" "$(extract_frame "$output" 0)" 'bar_bg: 6'
 
 echo ""
+echo "=== Scenario 17: Scan diagnostics and safe links ==="
+setup
+output=$(run_headless $'W\nq')
+check "headless W opens scan diagnostics" "$output" "POPUP scan_diagnostics"
+check "complete scan status is included in frames" "$(extract_frame "$output" 0)" "scan_status: complete"
+mkdir -p "$TEST_DIR/link-target"
+printf 'target data' > "$TEST_DIR/link-target/keep.txt"
+if ln -s "$TEST_DIR/link-target" "$TEST_DIR/target-link"; then
+    output=$(run_headless $'G\nDELETE\ny\nq')
+    check "link deletion action is logged" "$output" "ACTION deleted"
+    if [ -f "$TEST_DIR/link-target/keep.txt" ]; then
+        echo "  PASS: deleting a directory link keeps its target"
+        PASS=$((PASS + 1))
+    else
+        echo "  FAIL: deleting a directory link removed its target"
+        FAIL=$((FAIL + 1))
+    fi
+else
+    echo "  SKIP: this filesystem cannot create directory symlinks"
+fi
+
+echo ""
 # ============================================================
 cleanup
 

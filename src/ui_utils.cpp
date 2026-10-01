@@ -68,7 +68,7 @@ struct FooterSection {
 static const FooterSection sections[] = {
     {Text::Navigation, {Text::MoveBinding, Text::PageBinding}},
     {Text::Actions, {Text::ExpandBinding, Text::OpenBinding, Text::DeleteBinding}},
-    {Text::System, {Text::ColorBinding, Text::QuitBinding}},
+    {Text::System, {Text::ColorBinding, Text::WarningsBinding, Text::QuitBinding}},
 };
 
 // Build a flat string of bindings for a section
@@ -110,7 +110,8 @@ int footer_height(int cols) {
     return count_content_lines(cols) + 2; // content + separator + bottom
 }
 
-void draw_footer(int rows, int cols, int selected, int total_entries, double last_scan_ms) {
+void draw_footer(int rows, int cols, int selected, int total_entries, double last_scan_ms,
+                 bool scan_has_warnings) {
     int content_lines = count_content_lines(cols);
     int footer_start = rows - 2 - content_lines;
 
@@ -120,10 +121,12 @@ void draw_footer(int rows, int cols, int selected, int total_entries, double las
     // Right info string (embedded in bottom border later)
     char right_buf[64];
     std::string scan_str = format_scan_time(last_scan_ms);
+    const char* scan_label = text(Text::Scan);
+    std::string decorated_scan = scan_has_warnings ? std::string(scan_label) + "*" : scan_label;
     if (total_entries > 0) {
-        snprintf(right_buf, sizeof(right_buf), " %d/%d  %s: %s ", selected + 1, total_entries, text(Text::Scan), scan_str.c_str());
+        snprintf(right_buf, sizeof(right_buf), " %d/%d  %s: %s ", selected + 1, total_entries, decorated_scan.c_str(), scan_str.c_str());
     } else {
-        snprintf(right_buf, sizeof(right_buf), " %s: %s ", text(Text::Scan), scan_str.c_str());
+        snprintf(right_buf, sizeof(right_buf), " %s: %s ", decorated_scan.c_str(), scan_str.c_str());
     }
 
     if (wide_footer(cols)) {
@@ -318,7 +321,8 @@ void print_directory_entries(const std::vector<EntryInfo>& entries, int selected
             attroff(A_BOLD);
             if (idx == selected) attroff(A_REVERSE);
         } else {
-            double percent = std::min(1.0, (double)e.size / parent_sizes[idx]);
+            double percent = e.size_status == SizeStatus::unavailable
+                ? 0.0 : std::min(1.0, (double)e.size / parent_sizes[idx]);
             int bar_width = std::max(1, (int)((content_cols - start_col - indent_width) * percent));
 
             attron(COLOR_PAIR(2));
@@ -327,9 +331,12 @@ void print_directory_entries(const std::vector<EntryInfo>& entries, int selected
             }
             attroff(COLOR_PAIR(2));
 
-            std::string size_str = human_readable_size(e.size);
+            std::string size_str = e.size_status == SizeStatus::unavailable
+                ? text(Text::SizeUnavailable) : human_readable_size(e.size);
+            if (e.size_status == SizeStatus::partial) size_str += " (" + std::string(text(Text::SizePartial)) + ")";
             std::string name_str = e.name;
             if (is_dir) name_str += "/";
+            if (e.type == "[LINK]") name_str += " @";
             std::string entry_text = name_str + "  " + size_str;
 
             if (idx == selected) attron(A_REVERSE);
@@ -403,6 +410,45 @@ bool confirm_popup(const std::string& message) {
             return false;
         }
     }
+}
+
+void show_scan_diagnostics(const ScanResult& result) {
+    int rows = 0, cols = 0;
+    getmaxyx(stdscr, rows, cols);
+    if (rows < 7 || cols < 16 || result.diagnostics.empty()) return;
+
+    std::vector<std::string> lines;
+    lines.reserve(result.diagnostics.size());
+    for (const auto& issue : result.diagnostics) {
+        lines.push_back(issue.path.u8string() + " [" + issue.operation + "]: " + issue.error.message());
+    }
+    const int height = std::min(rows - 2, std::max(6, std::min(12, static_cast<int>(lines.size()) + 4)));
+    const int width = std::min(cols - 2, 100);
+    WINDOW* win = newwin(height, width, (rows - height) / 2, (cols - width) / 2);
+    if (!win) return;
+    keypad(win, TRUE);
+    int first = 0;
+    while (true) {
+        werase(win);
+        box(win, 0, 0);
+        const std::string title = std::string(text(Text::ScanDiagnostics)) + " (" +
+                                  std::to_string(lines.size()) + ")";
+        mvwaddnstr(win, 0, 2, title.c_str(), width - 4);
+        const int visible = height - 4;
+        for (int line = 0; line < visible && first + line < static_cast<int>(lines.size()); ++line)
+            mvwaddnstr(win, line + 1, 2, lines[first + line].c_str(), width - 4);
+        const std::string hint = std::string(text(Text::PressAnyKey)) + " (Esc)";
+        mvwaddnstr(win, height - 2, 2, hint.c_str(), width - 4);
+        wrefresh(win);
+        const int input = wgetch(win);
+        if (input == KEY_UP || input == 'k') first = std::max(0, first - 1);
+        else if (input == KEY_DOWN || input == 'j')
+            first = std::min(std::max(0, static_cast<int>(lines.size()) - visible), first + 1);
+        else break;
+    }
+    delwin(win);
+    touchwin(stdscr);
+    refresh();
 }
 
 std::pair<int, int> bar_color_selection_popup(int foreground, int background) {

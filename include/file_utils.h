@@ -2,10 +2,20 @@
 #include <string>
 #include <filesystem>
 #include <functional>
+#include <system_error>
 #include <vector>
 #include <set>
 
 using FileSizeReader = std::function<std::uintmax_t(const std::filesystem::path&)>;
+
+enum class ScanStatus { complete, partial, failed };
+enum class SizeStatus { complete, partial, unavailable };
+
+struct ScanIssue {
+    std::filesystem::path path;
+    std::string operation;
+    std::error_code error;
+};
 
 struct EntryInfo {
     std::string type;
@@ -14,6 +24,18 @@ struct EntryInfo {
     std::uintmax_t size;
     int depth = 0;           // Nivel de indentación
     bool expanded = false;   // Solo para directorios
+    SizeStatus size_status = SizeStatus::complete;
+};
+
+struct ScanResult {
+    ScanStatus status = ScanStatus::complete;
+    std::vector<ScanIssue> diagnostics;
+    std::vector<EntryInfo> entries;
+};
+
+struct ScanOptions {
+    FileSizeReader file_size_reader;
+    std::function<std::error_code(const std::filesystem::path&, const std::string&)> error_injector;
 };
 
 std::vector<EntryInfo> get_directory_entries(const std::filesystem::path& path = ".", int depth = 0);
@@ -25,6 +47,10 @@ void build_tree_entries(const std::filesystem::path& path,
                         int depth = 0,
                         int max_files = 30,
                         const FileSizeReader& file_size_reader = {});
+ScanResult scan_tree_entries(const std::filesystem::path& path,
+                             const std::set<std::filesystem::path>& expanded_dirs,
+                             int max_files = 30,
+                             const ScanOptions& options = {});
 
 void clear_dir_size_cache();
 void clear_tree_entries_cache();

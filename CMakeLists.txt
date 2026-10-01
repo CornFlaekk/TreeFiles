@@ -62,7 +62,7 @@ treefiles_warnings(treefiles)
 
 include(CTest)
 if(BUILD_TESTING)
-    foreach(component human_readable_size build_tree pagination settings localization)
+    foreach(component human_readable_size build_tree pagination settings localization scan)
         add_executable(test_${component} tests/test_${component}.cpp)
         target_link_libraries(test_${component} PRIVATE treefiles_core)
         treefiles_warnings(test_${component})

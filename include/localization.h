@@ -8,7 +8,9 @@ enum class Text {
     Black, Red, Green, Yellow, Blue, Magenta, Cyan, White,
     Loading, DeletePrompt, Error, ColorsUnsupported, Usage, PageSizeError, LanguageError,
     UnknownOption, UsageHint, UnreadableDirectory, ConfigLoadWarning, ConfigSaveWarning,
-    OpenPathError, OpenCommandError, Bytes, InvalidColorEvent, Count
+    OpenPathError, OpenCommandError, Bytes, InvalidColorEvent,
+    WarningsBinding, ScanWarnings, ScanDiagnostics, PressAnyKey, SizePartial, SizeUnavailable,
+    Count
 };
 
 bool set_language(const std::string& code);

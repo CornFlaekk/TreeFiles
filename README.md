@@ -162,7 +162,13 @@ are included in directory totals.
 | Space | Open with the system's default application |
 | Delete | Delete the selected file or directory after confirmation |
 | `B` | Choose the bar's background and text colors |
+| `W` | Review filesystem errors and omitted entries from the last scan |
 | `Q` | Quit |
+
+TreeFiles lists symbolic links and Windows directory junctions without following
+them. A link can be opened with Space or deleted without deleting its target.
+If an item could not be read, directory sizes are marked partial or unavailable;
+press `W` to review the affected paths and filesystem errors.
 
 In the color picker, use arrows or `j/k`, Enter to confirm each color and Escape
 to cancel. The picker starts with the current colors. In delete confirmations,
@@ -223,9 +229,11 @@ colors; `B` only logs the available choices in headless mode.
 ~~~
 
 Frames contain the current path, language, page size, pagination, selection,
-scrolling, expansion, colors and entry list. Headless opening logs an action;
-confirmed deletion still removes files. Exit codes are 0 on success, 1 for an
-invalid directory and 2 for invalid command-line options.
+scrolling, expansion, colors, entry list, `scan_status`, and structured
+`diagnostics_count`/`diagnostic_N` records. Headless opening logs an action;
+confirmed deletion still removes files. Exit codes are 0 on success, 1 when the
+root cannot be listed, and 2 for invalid command-line options. Errors isolated
+to a child keep accessible results and mark the scan partial.
 
 ## Troubleshooting
 

@@ -30,13 +30,32 @@ static short curses_color(int index) {
     return colors.at(static_cast<size_t>(index));
 }
 
+static const char* scan_status_name(ScanStatus status) {
+    switch (status) {
+        case ScanStatus::complete: return "complete";
+        case ScanStatus::partial: return "partial";
+        case ScanStatus::failed: return "failed";
+    }
+    return "failed";
+}
+
+static const char* size_status_name(SizeStatus status) {
+    switch (status) {
+        case SizeStatus::complete: return "complete";
+        case SizeStatus::partial: return "partial";
+        case SizeStatus::unavailable: return "unavailable";
+    }
+    return "unavailable";
+}
+
 static void headless_dump_frame(const std::vector<EntryInfo>& entries, int selected,
                                 int scroll_offset, int visible_rows,
                                 const std::filesystem::path& current_path,
                                 const std::set<std::filesystem::path>& expanded_dirs,
                                 double last_scan_ms,
                                 int bar_fg, int bar_bg, int frame_num,
-                                int total_pages, int current_page, int page_size) {
+                                int total_pages, int current_page, int page_size,
+                                const ScanResult& scan_result) {
     std::cout << "=== FRAME " << frame_num << " ===" << std::endl;
     std::cout << "current_path: " << current_path.u8string() << std::endl;
     std::cout << "selected_index: " << selected << std::endl;
@@ -59,6 +78,14 @@ static void headless_dump_frame(const std::vector<EntryInfo>& entries, int selec
     std::cout << "}" << std::endl;
 
     std::cout << "last_scan_ms: " << last_scan_ms << std::endl;
+    std::cout << "scan_status: " << scan_status_name(scan_result.status) << std::endl;
+    std::cout << "diagnostics_count: " << scan_result.diagnostics.size() << std::endl;
+    for (size_t i = 0; i < scan_result.diagnostics.size(); ++i) {
+        const auto& issue = scan_result.diagnostics[i];
+        std::cout << "diagnostic_" << i << ": path=" << issue.path.u8string()
+                  << " operation=" << issue.operation << " error_code=" << issue.error.value()
+                  << " message=" << issue.error.message() << std::endl;
+    }
     std::cout << "bar_fg: " << bar_fg << std::endl;
     std::cout << "bar_bg: " << bar_bg << std::endl;
 
@@ -110,7 +137,8 @@ static void headless_dump_frame(const std::vector<EntryInfo>& entries, int selec
 
             std::cout << "  " << i << ": " << marker << " " << indent
                       << e.type << " " << e.name
-                      << "  " << size_str << "  (" << pct_buf << ") " << bar << std::endl;
+                      << "  " << size_str << "  (" << pct_buf << ") " << bar
+                      << "  size_status=" << size_status_name(e.size_status) << std::endl;
         }
     }
     std::cout << "=== END FRAME ===" << std::endl;
@@ -265,6 +293,16 @@ int main(int argc, char* argv[]) {
         std::cerr << text(Text::UnreadableDirectory) << start_path.u8string() << std::endl;
         return 1;
     }
+    if (!path_error && (is_directory_link(start_path) ||
+        std::filesystem::is_symlink(std::filesystem::symlink_status(start_path, path_error)))) {
+        const auto requested_path = start_path;
+        start_path = std::filesystem::canonical(requested_path, path_error);
+        if (path_error) {
+            std::cerr << text(Text::UnreadableDirectory) << requested_path.u8string() << ": "
+                      << path_error.message() << std::endl;
+            return 1;
+        }
+    }
 
     const auto config_path = configuration_file();
     std::string config_error;
@@ -284,6 +322,7 @@ int main(int argc, char* argv[]) {
         std::filesystem::path current_path = start_path;
         auto& expanded_dirs = get_expanded_dirs();
         double last_scan_ms = 0.0;
+        ScanResult scan_result;
 
         std::vector<EntryInfo> entries;
         bool need_refresh = true;
@@ -292,9 +331,9 @@ int main(int argc, char* argv[]) {
         int frame_num = 0;
 
         auto rebuild_tree = [&]() {
-            entries.clear();
             auto t0 = std::chrono::high_resolution_clock::now();
-            build_tree_entries(current_path, expanded_dirs, entries, 0, page_size);
+            scan_result = scan_tree_entries(current_path, expanded_dirs, page_size);
+            entries = scan_result.entries;
             auto t1 = std::chrono::high_resolution_clock::now();
             last_scan_ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
             need_refresh = false;
@@ -317,11 +356,18 @@ int main(int argc, char* argv[]) {
         };
 
         rebuild_tree();
+        if (scan_result.status == ScanStatus::failed) {
+            std::cerr << text(Text::UnreadableDirectory) << current_path.u8string() << std::endl;
+            for (const auto& issue : scan_result.diagnostics)
+                std::cerr << issue.path.u8string() << ": " << issue.error.message() << std::endl;
+            return 1;
+        }
         int total_pages = 1, current_page = 0;
         get_page_info(total_pages, current_page);
         headless_dump_frame(entries, selected, scroll_offset, visible_rows,
                             current_path, expanded_dirs, last_scan_ms,
-                            bar_fg, bar_bg, frame_num, total_pages, current_page, page_size);
+                            bar_fg, bar_bg, frame_num, total_pages, current_page, page_size,
+                            scan_result);
         frame_num++;
 
         std::string event_line;
@@ -335,6 +381,12 @@ int main(int argc, char* argv[]) {
 
             if (need_refresh)
                 rebuild_tree();
+            if (scan_result.status == ScanStatus::failed) {
+                std::cerr << text(Text::UnreadableDirectory) << current_path.u8string() << std::endl;
+                for (const auto& issue : scan_result.diagnostics)
+                    std::cerr << issue.path.u8string() << ": " << issue.error.message() << std::endl;
+                return 1;
+            }
 
             bool popup_handled = false;
 
@@ -468,6 +520,17 @@ int main(int argc, char* argv[]) {
                 std::cout << "=== END POPUP ===" << std::endl;
                 popup_handled = true;
                 break;
+            case 'w':
+            case 'W':
+                std::cout << "=== POPUP scan_diagnostics ===" << std::endl;
+                std::cout << "scan_status: " << scan_status_name(scan_result.status) << std::endl;
+                for (const auto& issue : scan_result.diagnostics)
+                    std::cout << "path: " << issue.path.u8string() << " operation: "
+                              << issue.operation << " error_code: " << issue.error.value()
+                              << " message: " << issue.error.message() << std::endl;
+                std::cout << "=== END POPUP ===" << std::endl;
+                popup_handled = true;
+                break;
             case 0x10000: {
                 std::istringstream event(event_line);
                 std::string command, foreground, background, extra;
@@ -499,7 +562,8 @@ int main(int argc, char* argv[]) {
                 get_page_info(tp, cp);
                 headless_dump_frame(entries, selected, scroll_offset, visible_rows,
                                     current_path, expanded_dirs, last_scan_ms,
-                                    bar_fg, bar_bg, frame_num, tp, cp, page_size);
+                                    bar_fg, bar_bg, frame_num, tp, cp, page_size,
+                                    scan_result);
                 frame_num++;
             }
         }
@@ -538,6 +602,7 @@ int main(int argc, char* argv[]) {
     std::filesystem::path current_path = start_path;
     auto& expanded_dirs = get_expanded_dirs();
     double last_scan_ms = 0.0;
+    ScanResult scan_result;
     std::atomic<bool> loading(false);
     std::atomic<bool> anim_started(false);
 
@@ -557,9 +622,18 @@ int main(int argc, char* argv[]) {
             loading = true;
             anim_started = false;
             std::thread loader([&]() {
-                entries.clear();
                 auto t0 = std::chrono::high_resolution_clock::now();
-                build_tree_entries(current_path, expanded_dirs, entries, 0, page_size);
+                try {
+                    scan_result = scan_tree_entries(current_path, expanded_dirs, page_size);
+                } catch (const std::filesystem::filesystem_error& ex) {
+                    scan_result.status = ScanStatus::failed;
+                    scan_result.diagnostics.push_back({ex.path1(), "scan", ex.code()});
+                } catch (...) {
+                    scan_result.status = ScanStatus::failed;
+                    scan_result.diagnostics.push_back({current_path, "scan",
+                        std::make_error_code(std::errc::io_error)});
+                }
+                entries = scan_result.entries;
                 auto t1 = std::chrono::high_resolution_clock::now();
                 last_scan_ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
                 loading = false;
@@ -583,6 +657,8 @@ int main(int argc, char* argv[]) {
                 std::this_thread::sleep_for(std::chrono::milliseconds(80));
             }
             need_refresh = false;
+            if (scan_result.status == ScanStatus::failed)
+                show_scan_diagnostics(scan_result);
         }
         clamp_and_skip_selection(entries, selected, select_first_owner, select_last_owner);
         update_scroll(selected, scroll_offset, visible_rows);
@@ -604,7 +680,8 @@ int main(int argc, char* argv[]) {
         clear();
         draw_header(cols, current_path, current_page, total_pages);
         print_directory_entries(entries, selected, scroll_offset, visible_rows, (int)entries.size(), 1, 2);
-        draw_footer(rows, cols, selected, (int)entries.size(), last_scan_ms);
+        draw_footer(rows, cols, selected, (int)entries.size(), last_scan_ms,
+                    !scan_result.diagnostics.empty());
         refresh();
         input = getch();
         switch (input) {
@@ -727,6 +804,10 @@ int main(int argc, char* argv[]) {
                 } else {
                     confirm_popup(text(Text::ColorsUnsupported));
                 }
+                break;
+            case 'w':
+            case 'W':
+                show_scan_diagnostics(scan_result);
                 break;
         }
         update_scroll(selected, scroll_offset, visible_rows);

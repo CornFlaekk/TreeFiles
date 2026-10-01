@@ -1,11 +1,13 @@
 #include "platform_utils.h"
 #include "localization.h"
 #include <cstdlib>
+#include <cstring>
 #include <stdexcept>
 
 #ifdef _WIN32
 #include <windows.h>
 #include <shellapi.h>
+#include <winioctl.h>
 #else
 #include <cerrno>
 #include <cstring>
@@ -129,4 +131,32 @@ bool open_path(const std::filesystem::path& path, std::string& error) {
     }).detach();
 #endif
     return true;
+}
+
+bool is_directory_link(const std::filesystem::path& path) {
+#ifdef _WIN32
+    const DWORD attributes = GetFileAttributesW(path.c_str());
+    if (attributes == INVALID_FILE_ATTRIBUTES ||
+        (attributes & FILE_ATTRIBUTE_DIRECTORY) == 0 ||
+        (attributes & FILE_ATTRIBUTE_REPARSE_POINT) == 0) return false;
+
+    HANDLE handle = CreateFileW(path.c_str(), 0,
+        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING,
+        FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS, nullptr);
+    if (handle == INVALID_HANDLE_VALUE) return false;
+
+    unsigned char reparse_data[16 * 1024]{};
+    DWORD bytes_returned = 0;
+    const BOOL success = DeviceIoControl(handle, FSCTL_GET_REPARSE_POINT, nullptr, 0,
+        reparse_data, sizeof(reparse_data), &bytes_returned, nullptr);
+    CloseHandle(handle);
+    if (!success || bytes_returned < sizeof(DWORD)) return false;
+
+    DWORD tag = 0;
+    std::memcpy(&tag, reparse_data, sizeof(tag));
+    return tag == IO_REPARSE_TAG_SYMLINK || tag == IO_REPARSE_TAG_MOUNT_POINT;
+#else
+    (void)path;
+    return false;
+#endif
 }
