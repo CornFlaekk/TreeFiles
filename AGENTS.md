@@ -3,10 +3,11 @@
 ## Tech Stack
 
 - **Language:** C++17
-- **Compiler:** `g++` (invoked via Makefile)
-- **TUI Library:** ncurses (linked with `-lncurses`)
-- **Build System:** GNU Make
-- **Platform:** Linux (uses `xdg-open` for file opening)
+- **Compiler:** C++17-capable GCC or MSVC; Windows scripts use pinned w64devkit GCC.
+- **TUI Library:** ncursesw on Linux, static PDCurses 3.9 wincon on Windows.
+- **Build System:** CMake 3.20+ / CTest on both platforms; GNU Make remains supported on Linux.
+- **Platforms:** Linux (`xdg-open`) and native Windows (wide-character ShellExecuteEx).
+- **Releases:** `.github/workflows/build.yml` builds/tests both x64 platforms and uploads both packages on a published GitHub release, only after both builds succeed.
 
 ## Project Structure
 
@@ -35,6 +36,32 @@ TreeFiles/
 ```
 
 ## Commands
+
+On Windows, in PowerShell:
+
+```powershell
+.\scripts\build_windows.ps1 -Test
+.\build\windows-debug\treefiles.exe .
+.\scripts\build_windows.ps1 -Configuration Release -Test
+.\scripts\package_windows.ps1
+```
+
+The compiler is local to `.tools/`, which is ignored by Git. Do not use the old
+system MinGW or require WSL for the Windows build. `setup_windows.ps1` adds the
+portable toolchain to PATH for the current process only. Initial Windows builds
+download checksum-verified w64devkit and PDCurses. Platform-specific argument,
+console and file-opening helpers live in `include/platform_utils.h` and
+`src/platform_utils.cpp`.
+
+The shared build works on Linux as well:
+
+```bash
+cmake -S . -B build/linux-debug -DCMAKE_BUILD_TYPE=Debug
+cmake --build build/linux-debug --parallel
+ctest --test-dir build/linux-debug --output-on-failure
+```
+
+The commands below use the Linux Makefile:
 
 ```bash
 make                    # Build the treefiles binary
@@ -164,17 +191,19 @@ struct EntryInfo {
 
 ## Code Conventions
 
-- **Headers:** Use `#pragma once`. Include order: standard library, ncurses, project headers.
+- **Headers:** Use `#pragma once`. Include order: standard library, curses, project headers. Use `<curses.h>` for both TUI backends.
 - **Naming:** snake_case for functions and variables. PascalCase (actually just capitalized first letter) for structs. Struct members use snake_case.
 - **Types:** Prefer `std::filesystem::path` for paths, `std::uintmax_t` for file sizes.
 - **Error handling:** Try/catch for filesystem operations, return 0/bool for failures.
 - **Thread safety:** `std::mutex` guards the directory size cache. `std::atomic<bool>` for loading flags.
-- **No external dependencies:** Only C++17 standard library + ncurses.
+- **Dependencies:** C++17 standard library + the platform's curses backend. Keep platform-specific APIs in `platform_utils.cpp`.
+- **Paths:** Keep filesystem paths as `std::filesystem::path`; use `u8string()` for display and `u8path()` for UTF-8 input. Windows arguments come from the wide-character command line.
+- **Line endings:** `.gitattributes` enforces LF so Linux scripts work after a Windows checkout.
 
 ## Testing Guidelines
 
 - Unit tests go in `tests/test_<component>.cpp`. Each is a standalone executable returning 0 on success, non-zero on failure.
 - Use standard `assert()` for simple checks, or custom `check()` macros for descriptive output.
-- Integration scenarios in `scripts/test_scenarios.sh` use headless mode with piped events.
+- Integration scenarios in `scripts/test_scenarios.sh` (Linux) and `scripts/test_scenarios.ps1` (Windows) use headless mode with piped events. CTest runs the appropriate suite. `TREEFILES_BINARY` lets the Bash suite use an already-built binary.
 - Visual verification via `scripts/run_interactive.sh` and `screenshots/`.
-- Test directories are created under `/tmp/treefiles_test/` and cleaned up after each test run.
+- C++ unit tests use unique directories under `std::filesystem::temp_directory_path()`. PowerShell tests also use a unique temporary directory and only delete their own fixtures. The Bash suite uses `/tmp/treefiles_test_integration`.

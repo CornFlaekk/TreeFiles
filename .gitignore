@@ -1,4 +1,7 @@
 build/
+.tools/
+dist/
 .vscode/
 treefiles
+treefiles.exe
 screenshots/

@@ -83,10 +83,10 @@ void build_tree_entries(const std::filesystem::path& path,
         if (entry.is_directory()) {
             std::uintmax_t dir_size = get_directory_size(entry.path());
             bool is_expanded = expanded_dirs.count(entry.path()) > 0;
-            all_entries.push_back({"[DIR] ", entry.path().filename().string(), entry.path(), dir_size, depth, is_expanded});
+            all_entries.push_back({"[DIR] ", entry.path().filename().u8string(), entry.path(), dir_size, depth, is_expanded});
         } else if (entry.is_regular_file()) {
             std::uintmax_t sz = entry.file_size();
-            all_entries.push_back({"[FILE]", entry.path().filename().string(), entry.path(), sz, depth, false});
+            all_entries.push_back({"[FILE]", entry.path().filename().u8string(), entry.path(), sz, depth, false});
         }
     }
     // Ordena todo junto por tamaño descendente y nombre

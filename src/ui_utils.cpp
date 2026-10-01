@@ -4,6 +4,7 @@
 #include <cstring>
 #include <vector>
 #include "ui_utils.h"
+#include "platform_utils.h"
 #include <array>
 #include <tuple>
 
@@ -31,10 +32,10 @@ void draw_header(int cols, const std::filesystem::path& current_path, int page, 
     mvaddch(0, 14, ACS_VLINE);
 
     // Center: path
-    std::string path_str = current_path.string();
-    const char* home = getenv("HOME");
-    if (home && path_str.compare(0, strlen(home), home) == 0) {
-        path_str = "~" + path_str.substr(strlen(home));
+    std::string path_str = current_path.u8string();
+    auto home = home_directory().u8string();
+    if (!home.empty() && path_str.compare(0, home.size(), home) == 0) {
+        path_str = "~" + path_str.substr(home.size());
     }
 
     int path_x = 16;
@@ -326,17 +327,21 @@ void print_directory_entries(const std::vector<EntryInfo>& entries, int selected
             std::string entry_text = name_str + "  " + size_str;
 
             if (idx == selected) attron(A_REVERSE);
-            for (size_t c = 0; c < entry_text.size() && bar_col + (int)c < cols - 2; ++c) {
-                int col = bar_col + (int)c;
-                if ((int)c < bar_width) {
-                    attron(COLOR_PAIR(2));
-                    mvaddch(bar_row, col, entry_text[c]);
-                    attroff(COLOR_PAIR(2));
-                } else {
-                    attron(COLOR_PAIR(1));
-                    mvaddch(bar_row, col, entry_text[c]);
-                    attroff(COLOR_PAIR(1));
-                }
+            int col = bar_col;
+            for (size_t c = 0; c < entry_text.size() && col < cols - 2;) {
+                // Send a complete UTF-8 character to either curses backend.
+                size_t next = c + 1;
+                while (next < entry_text.size() &&
+                       (static_cast<unsigned char>(entry_text[next]) & 0xc0) == 0x80)
+                    ++next;
+                int pair = (col - bar_col < bar_width) ? 2 : 1;
+                attron(COLOR_PAIR(pair));
+                mvaddnstr(bar_row, col, entry_text.c_str() + c, static_cast<int>(next - c));
+                attroff(COLOR_PAIR(pair));
+                int next_col = getcurx(stdscr);
+                if (next_col < col) break;
+                col = next_col;
+                c = next;
             }
             if (idx == selected) attroff(A_REVERSE);
         }

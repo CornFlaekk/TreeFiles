@@ -1,6 +1,6 @@
 #pragma once
 #include <atomic>
-#include <ncurses.h>
+#include <curses.h>
 #include <vector>
 #include <string>
 #include "file_utils.h"

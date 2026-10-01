@@ -1,7 +1,8 @@
 #include <clocale>
-#include <ncurses.h>
+#include <curses.h>
 #include <ui_utils.h>
 #include <file_utils.h>
+#include "platform_utils.h"
 #include <filesystem>
 #include <vector>
 #include <string>
@@ -23,7 +24,7 @@ static void headless_dump_frame(const std::vector<EntryInfo>& entries, int selec
                                 int bar_fg, int bar_bg, int frame_num,
                                 int total_pages, int current_page) {
     std::cout << "=== FRAME " << frame_num << " ===" << std::endl;
-    std::cout << "current_path: " << current_path.string() << std::endl;
+    std::cout << "current_path: " << current_path.u8string() << std::endl;
     std::cout << "selected_index: " << selected << std::endl;
     std::cout << "scroll_offset: " << scroll_offset << std::endl;
     std::cout << "visible_rows: " << visible_rows << std::endl;
@@ -36,7 +37,7 @@ static void headless_dump_frame(const std::vector<EntryInfo>& entries, int selec
     bool first_dir = true;
     for (const auto& d : expanded_dirs) {
         if (!first_dir) std::cout << ", ";
-        std::cout << d.string();
+        std::cout << d.u8string();
         first_dir = false;
     }
     std::cout << "}" << std::endl;
@@ -171,16 +172,22 @@ static void update_scroll(int selected, int& scroll_offset, int visible_rows) {
 }
 
 int main(int argc, char* argv[]) {
+    ConsoleEncoding console_encoding;
     bool headless = false;
     std::filesystem::path start_path = ".";
 
-    for (int i = 1; i < argc; ++i) {
-        std::string arg = argv[i];
+    for (const auto& arg : command_line_arguments(argc, argv)) {
         if (arg == "--headless") {
             headless = true;
-        } else if (arg[0] != '-') {
-            start_path = arg;
+        } else if (!arg.empty() && arg[0] != '-') {
+            start_path = std::filesystem::u8path(arg);
         }
+    }
+
+    std::error_code path_error;
+    if (!std::filesystem::is_directory(start_path, path_error)) {
+        std::cerr << "Not a readable directory: " << start_path.u8string() << std::endl;
+        return 1;
     }
 
     // ==================== HEADLESS MODE ====================
@@ -266,7 +273,7 @@ int main(int argc, char* argv[]) {
             case ' ':
                 if (!entries.empty()) {
                     std::cout << "=== ACTION open ===" << std::endl;
-                    std::cout << "file: " << entries[selected].full_path.string() << std::endl;
+                    std::cout << "file: " << entries[selected].full_path.u8string() << std::endl;
                     std::cout << "=== END ACTION ===" << std::endl;
                 }
                 break;
@@ -341,7 +348,7 @@ int main(int argc, char* argv[]) {
                             }
                             clear_dir_size_cache();
                             std::cout << "=== ACTION deleted ===" << std::endl;
-                            std::cout << "path: " << entry.full_path.string() << std::endl;
+                            std::cout << "path: " << entry.full_path.u8string() << std::endl;
                             std::cout << "=== END ACTION ===" << std::endl;
                         } catch (const std::exception& ex) {
                             std::cout << "=== POPUP error ===" << std::endl;
@@ -495,9 +502,9 @@ int main(int argc, char* argv[]) {
                 break;
             case ' ':
                 if (!entries.empty()) {
-                    std::string full_path = entries[selected].full_path.string();
-                    std::string cmd = "xdg-open \"" + full_path + "\" > /dev/null 2>&1 &";
-                    system(cmd.c_str());
+                    std::string error;
+                    if (!open_path(entries[selected].full_path, error))
+                        confirm_popup(error);
                 }
                 break;
             case 'e':

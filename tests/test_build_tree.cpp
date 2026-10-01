@@ -1,4 +1,5 @@
 #include "file_utils.h"
+#include "test_directory.h"
 #include <cstdio>
 #include <cassert>
 #include <filesystem>
@@ -17,17 +18,18 @@ static int tests_failed = 0;
 #define CHECK(cond) do { if (!(cond)) { printf("FAIL\n"); tests_failed++; return; } } while(0)
 #define PASS() printf("OK\n")
 
-const char* BASE = "/tmp/treefiles_test";
+static const TestDirectory test_directory("build_tree");
+const fs::path BASE = test_directory.path;
 
 void setup() {
     fs::remove_all(BASE);
     fs::create_directories(BASE);
-    fs::create_directories(std::string(BASE) + "/dir_a");
-    fs::create_directories(std::string(BASE) + "/dir_b");
-    fs::create_directories(std::string(BASE) + "/dir_a/sub");
+    fs::create_directories(BASE / "dir_a");
+    fs::create_directories(BASE / "dir_b");
+    fs::create_directories(BASE / "dir_a/sub");
 }
 
-bool create_file(const std::string& path, std::uintmax_t size) {
+bool create_file(const fs::path& path, std::uintmax_t size) {
     std::ofstream f(path, std::ios::binary);
     if (!f) return false;
     if (size > 0) {
@@ -44,10 +46,10 @@ void cleanup() {
 void test_sorted_by_size_descending() {
     TEST("entries sorted by size descending");
     setup();
-    create_file(std::string(BASE) + "/small.txt", 100);
-    create_file(std::string(BASE) + "/medium.txt", 1024);
-    create_file(std::string(BASE) + "/large.txt", 10240);
-    create_file(std::string(BASE) + "/dir_a/sub/deep.txt", 512);
+    create_file(BASE / "small.txt", 100);
+    create_file(BASE / "medium.txt", 1024);
+    create_file(BASE / "large.txt", 10240);
+    create_file(BASE / "dir_a/sub/deep.txt", 512);
 
     clear_dir_size_cache();
     reset_resto_state();
@@ -67,7 +69,7 @@ void test_sorted_by_size_descending() {
 void test_file_types() {
     TEST("file entries have [FILE] type");
     setup();
-    create_file(std::string(BASE) + "/file.txt", 100);
+    create_file(BASE / "file.txt", 100);
 
     clear_dir_size_cache();
     reset_resto_state();
@@ -92,14 +94,14 @@ void test_file_types() {
 void test_expanded_directories() {
     TEST("expanded directories include children");
     setup();
-    create_file(std::string(BASE) + "/dir_a/child.txt", 500);
-    create_file(std::string(BASE) + "/root.txt", 100);
+    create_file(BASE / "dir_a/child.txt", 500);
+    create_file(BASE / "root.txt", 100);
 
     clear_dir_size_cache();
     reset_resto_state();
     auto& expanded = get_expanded_dirs();
     expanded.clear();
-    expanded.insert(fs::path(std::string(BASE) + "/dir_a"));
+    expanded.insert(fs::path(BASE / "dir_a"));
 
     std::vector<EntryInfo> entries;
     build_tree_entries(BASE, expanded, entries, 0, 30);
@@ -116,13 +118,13 @@ void test_expanded_directories() {
 void test_depth_increases_for_children() {
     TEST("children have depth = parent depth + 1");
     setup();
-    create_file(std::string(BASE) + "/dir_a/child.txt", 500);
+    create_file(BASE / "dir_a/child.txt", 500);
 
     clear_dir_size_cache();
     reset_resto_state();
     auto& expanded = get_expanded_dirs();
     expanded.clear();
-    expanded.insert(fs::path(std::string(BASE) + "/dir_a"));
+    expanded.insert(fs::path(BASE / "dir_a"));
 
     std::vector<EntryInfo> entries;
     build_tree_entries(BASE, expanded, entries, 0, 30);
@@ -142,9 +144,9 @@ void test_depth_increases_for_children() {
 void test_alphabetic_tiebreaker() {
     TEST("same size entries sorted alphabetically");
     setup();
-    create_file(std::string(BASE) + "/zzz.txt", 100);
-    create_file(std::string(BASE) + "/aaa.txt", 100);
-    create_file(std::string(BASE) + "/mmm.txt", 100);
+    create_file(BASE / "zzz.txt", 100);
+    create_file(BASE / "aaa.txt", 100);
+    create_file(BASE / "mmm.txt", 100);
 
     clear_dir_size_cache();
     reset_resto_state();
