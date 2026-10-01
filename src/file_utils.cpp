@@ -25,7 +25,8 @@ std::string human_readable_size(std::uintmax_t bytes) {
 std::unordered_map<std::filesystem::path, std::uintmax_t> dir_size_cache;
 std::mutex cache_mutex;
 
-std::uintmax_t get_directory_size(const std::filesystem::path& dir_path) {
+std::uintmax_t get_directory_size(const std::filesystem::path& dir_path,
+                                  const FileSizeReader& file_size_reader = {}) {
     namespace fs = std::filesystem;
     fs::path norm_path = dir_path.lexically_normal();
     {
@@ -49,11 +50,10 @@ std::uintmax_t get_directory_size(const std::filesystem::path& dir_path) {
                     if (it != dir_size_cache.end()) {
                         sz = it->second;
                     } else {
-                        sz = entry.file_size();
+                        sz = file_size_reader ? file_size_reader(file_path) : entry.file_size();
                         dir_size_cache[file_path] = sz;
                     }
                 }
-                if (sz > (1ULL << 40)) continue; // Ignora archivos >1TB
                 size += sz;
             }
         }
@@ -78,7 +78,8 @@ void build_tree_entries(const std::filesystem::path& path,
                         const std::set<std::filesystem::path>& expanded_dirs,
                         std::vector<EntryInfo>& out,
                         int depth,
-                        int max_files) {
+                        int max_files,
+                        const FileSizeReader& file_size_reader) {
     namespace fs = std::filesystem;
     if (max_files <= 0) {
         throw std::invalid_argument("Page size must be positive.");
@@ -86,11 +87,11 @@ void build_tree_entries(const std::filesystem::path& path,
     std::vector<EntryInfo> all_entries;
     for (const auto& entry : fs::directory_iterator(path)) {
         if (entry.is_directory()) {
-            std::uintmax_t dir_size = get_directory_size(entry.path());
+            std::uintmax_t dir_size = get_directory_size(entry.path(), file_size_reader);
             bool is_expanded = expanded_dirs.count(entry.path()) > 0;
             all_entries.push_back({"[DIR] ", entry.path().filename().u8string(), entry.path(), dir_size, depth, is_expanded});
         } else if (entry.is_regular_file()) {
-            std::uintmax_t sz = entry.file_size();
+            std::uintmax_t sz = file_size_reader ? file_size_reader(entry.path()) : entry.file_size();
             all_entries.push_back({"[FILE]", entry.path().filename().u8string(), entry.path(), sz, depth, false});
         }
     }
@@ -124,7 +125,7 @@ void build_tree_entries(const std::filesystem::path& path,
     for (size_t i = start_idx; i < end_idx; ++i) {
         out.push_back(all_entries[i]);
         if (all_entries[i].type == "[DIR] " && all_entries[i].expanded) {
-            build_tree_entries(all_entries[i].full_path, expanded_dirs, out, depth + 1, max_files);
+            build_tree_entries(all_entries[i].full_path, expanded_dirs, out, depth + 1, max_files, file_size_reader);
         }
     }
 

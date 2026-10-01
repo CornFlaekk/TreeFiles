@@ -144,6 +144,10 @@ shows its children in the tree. The size bar is relative to the entries displaye
 at that level. Pagination and scrolling are independent: a large page can still
 be scrolled to fit the terminal.
 
+Displayed sizes are logical file lengths in bytes, including sparse files; they
+do not estimate how many storage blocks a file occupies. Files larger than 1 TiB
+are included in directory totals.
+
 ### Keyboard shortcuts
 
 | Key | Action |

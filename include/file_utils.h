@@ -1,8 +1,11 @@
 #pragma once
 #include <string>
 #include <filesystem>
+#include <functional>
 #include <vector>
 #include <set>
+
+using FileSizeReader = std::function<std::uintmax_t(const std::filesystem::path&)>;
 
 struct EntryInfo {
     std::string type;
@@ -20,7 +23,8 @@ void build_tree_entries(const std::filesystem::path& path,
                         const std::set<std::filesystem::path>& expanded_dirs,
                         std::vector<EntryInfo>& out,
                         int depth = 0,
-                        int max_files = 30);
+                        int max_files = 30,
+                        const FileSizeReader& file_size_reader = {});
 
 void clear_dir_size_cache();
 void clear_tree_entries_cache();
