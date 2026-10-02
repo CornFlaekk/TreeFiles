@@ -70,6 +70,48 @@ static bool entry_less(const EntryInfo& left, const EntryInfo& right, SortOption
     return bytewise_less(left_path, right_path);
 }
 
+static unsigned char fold_ascii(unsigned char value) {
+    if (value >= 'A' && value <= 'Z') return static_cast<unsigned char>(value + ('a' - 'A'));
+    return value;
+}
+
+static bool contains_ascii_insensitive(std::string_view value, std::string_view needle) {
+    if (needle.empty()) return true;
+    if (needle.size() > value.size()) return false;
+    for (size_t start = 0; start <= value.size() - needle.size(); ++start) {
+        size_t offset = 0;
+        while (offset < needle.size() &&
+               fold_ascii(static_cast<unsigned char>(value[start + offset])) ==
+               fold_ascii(static_cast<unsigned char>(needle[offset]))) ++offset;
+        if (offset == needle.size()) return true;
+    }
+    return false;
+}
+
+static std::string normalized_extension(std::string value) {
+    if (!value.empty() && value.front() == '.') value.erase(value.begin());
+    for (char& character : value)
+        character = static_cast<char>(fold_ascii(static_cast<unsigned char>(character)));
+    return value;
+}
+
+bool entry_matches_filter(const EntryInfo& entry, const FilterOptions& filter) {
+    if (entry.type == "[DIR] ") return true;
+    if (entry.type != "[FILE]" && entry.type != "[LINK]") return false;
+
+    if (!contains_ascii_insensitive(entry.name, filter.text)) return false;
+    const auto wanted_extension = normalized_extension(filter.extension);
+    if (wanted_extension.empty()) return true;
+    auto actual_extension = entry.full_path.extension().u8string();
+    if (!actual_extension.empty() && actual_extension.front() == '.')
+        actual_extension.erase(actual_extension.begin());
+    return normalized_extension(std::move(actual_extension)) == wanted_extension;
+}
+
+bool filter_is_active(const FilterOptions& filter) {
+    return !filter.text.empty() || !normalized_extension(filter.extension).empty();
+}
+
 std::string human_readable_size(std::uintmax_t bytes) {
     const char* sizes[] = {text(Text::Bytes), "KB", "MB", "GB", "TB"};
     int order = 0;
@@ -274,6 +316,25 @@ static void append_directory(const fs::path& path,
     std::sort(all_entries.begin(), all_entries.end(), [&](const EntryInfo& a, const EntryInfo& b) {
         return entry_less(a, b, options.sort);
     });
+
+    if (filter_is_active(options.filter)) {
+        std::vector<EntryInfo> filtered;
+        filtered.reserve(all_entries.size());
+        for (auto& entry : all_entries) {
+            if (entry.type == "[DIR] ") {
+                filtered.push_back(std::move(entry));
+            } else if (entry_matches_filter(entry, options.filter)) {
+                ++result.matching_files;
+                filtered.push_back(std::move(entry));
+            }
+        }
+        all_entries = std::move(filtered);
+    } else {
+        result.matching_files += static_cast<size_t>(std::count_if(
+            all_entries.begin(), all_entries.end(), [](const EntryInfo& entry) {
+                return entry.type == "[FILE]" || entry.type == "[LINK]";
+            }));
+    }
 
     const size_t page_capacity = static_cast<size_t>(max_files);
     size_t total_pages = all_entries.size() / page_capacity

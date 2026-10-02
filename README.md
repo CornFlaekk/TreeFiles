@@ -99,7 +99,7 @@ The Makefile is for Linux; use CMake or the PowerShell scripts on Windows.
 ## Usage
 
 ~~~text
-treefiles [--headless] [--page-size N] [--lang en|es] [--sort size|name|mtime] [--order asc|desc] [directory]
+treefiles [--headless] [--page-size N] [--lang en|es] [--sort size|name|mtime] [--order asc|desc] [--filter TEXT] [--ext EXT] [directory]
 ~~~
 
 | Option | Behavior |
@@ -109,6 +109,8 @@ treefiles [--headless] [--page-size N] [--lang en|es] [--sort size|name|mtime] [
 | `--lang en` / `--lang es` | Interface language; English is the default |
 | `--sort KEY` | Sort by `size`, `name`, or `mtime`; default `size` |
 | `--order DIR` | Sort `asc` or `desc`; default `desc` |
+| `--filter TEXT` | Keep files and links whose filename contains `TEXT` |
+| `--ext EXT` | Keep files and links with this final extension, with or without a leading dot |
 | `--headless` | Read events from stdin and print structured frames |
 | `--help`, `-h` | Show command-line help |
 | `--version` | Show the application version |
@@ -156,6 +158,15 @@ folder shows its children in the tree. The size bar is relative to the entries
 displayed at that level. Pagination and scrolling are independent: a large page
 can still be scrolled to fit the terminal.
 
+Use `--filter TEXT` and `--ext EXT` together to narrow the listing. Filename
+substring and final-extension comparisons ignore ASCII letter case; non-ASCII
+UTF-8 bytes are compared exactly, without Unicode case folding or normalization.
+The extension is the final extension only, and may be written as `txt` or
+`.txt`. Filters apply to files and links in the root and expanded directories;
+directories remain visible as context. Filtering happens before pagination,
+does not expand folders automatically, and does not change directory size
+totals.
+
 Displayed sizes are logical file lengths in bytes, including sparse files; they
 do not estimate how many storage blocks a file occupies. Files larger than 1 TiB
 are included in directory totals.
@@ -177,6 +188,8 @@ are included in directory totals.
 | `R` | Re-scan the current root and update cached sizes |
 | `S` | Cycle size, name, and modification-time sorting |
 | `T` | Toggle ascending or descending order |
+| `/` | Edit the filename and extension filters; Tab changes fields, Enter applies, Escape cancels |
+| `F` | Clear both filters |
 | Space | Open with the system's default application |
 | Delete | Delete the selected file or directory after confirmation |
 | `B` | Choose the bar's background and text colors |
@@ -242,7 +255,11 @@ Pipe one event per line. Arrow events use `UP`, `DOWN`, `LEFT` and `RIGHT`;
 path; the entire remainder of the line is treated as the literal path. Letter shortcuts work as
 in the interactive interface. `COLOR foreground background` applies and saves
 colors; `SORT <key> <order>` changes sorting with canonical values such as
-`SORT mtime asc`; `B` only logs the available choices in headless mode.
+`SORT mtime asc`; `FILTER <text>` sets the filename substring to the complete
+remainder of the line; `EXT <extension>` sets the final-extension filter;
+`CLEAR_FILTER` clears both. `FILTER` and `EXT` combine with the other active
+filter and reset pagination, selection, and scrolling. `B` only logs the
+available choices in headless mode.
 
 ~~~powershell
 'COLOR white blue', 'j', 'l', 'q' |
@@ -250,7 +267,8 @@ colors; `SORT <key> <order>` changes sorting with canonical values such as
 ~~~
 
 Frames contain the current path, language, page size, `sort_key`/`sort_order`,
-pagination, selection, scrolling, expansion, colors, entry list, `scan_status`, and structured
+`filter_text`, `filter_extension`, and `matching_files`, as well as pagination,
+selection, scrolling, expansion, colors, entry list, `scan_status`, and structured
 `diagnostics_count`/`diagnostic_N` records. Headless opening logs an action;
 confirmed deletion still removes files. Exit codes are 0 on success, 1 when the
 root cannot be listed, and 2 for invalid command-line options. Errors isolated

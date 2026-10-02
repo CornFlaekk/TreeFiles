@@ -14,6 +14,8 @@ enum class Text {
     PathPrompt, PathPromptHint, NavigationError,
     SortKeyError, SortOrderError, InvalidSortEvent,
     SortBinding, SortLabel, SortSize, SortName, SortMtime,
+    FilterBinding, FilterLabel, FilterNamePrompt, FilterExtensionPrompt, FilterHint,
+    FilterTextError, FilterExtensionError, InvalidFilterEvent,
     Count
 };
 

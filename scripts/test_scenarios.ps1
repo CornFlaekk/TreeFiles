@@ -398,6 +398,39 @@ try {
         Check ($result.Code -eq 2) "invalid sort option is rejected before curses: $arguments"
     }
 
+    $filterRoot = Join-Path $testRoot 'filter-root'
+    $filterContext = Join-Path $filterRoot 'context'
+    New-Item -ItemType Directory -Path $filterContext -Force | Out-Null
+    Write-TestFile (Join-Path $filterRoot 'Annual Report.TXT') 8
+    Write-TestFile (Join-Path $filterRoot 'report.csv') 4
+    Write-TestFile (Join-Path $filterRoot 'other.txt') 3
+    Write-TestFile (Join-Path $filterContext 'deep-report.log') 20
+    Write-TestFile (Join-Path $filterContext 'unmatched.bin') 10
+    $filterEvents = @('e', 'FILTER annual report', 'ENTER', 'BACKSPACE', 'EXT .TXT',
+                      'REFRESH', 'FILTER missing', 'CLEAR_FILTER', 'q')
+    $output = Run-Headless $filterEvents $filterRoot
+    $filtered = Frame $output 2
+    Check ($filtered.Contains('filter_text: annual report') -and $filtered.Contains('matching_files: 1')) 'FILTER preserves spaces and uses ASCII-insensitive filename matching'
+    Check ($filtered.Contains('[DIR]  context') -and $filtered.Contains('Annual Report.TXT')) 'filter retains directory context and matching file'
+    Check ($filtered.Contains('selected_index: 0') -and $filtered.Contains('scroll_offset: 0')) 'filter resets selection and scroll position'
+    Check ((Frame $output 3).Contains("current_path: $filterContext") -and (Frame $output 3).Contains('filter_text: annual report')) 'Enter preserves active filters while changing root'
+    Check ((Frame $output 4).Contains("current_path: $filterRoot") -and (Frame $output 4).Contains('filter_text: annual report')) 'Backspace preserves active filters'
+    Check ((Frame $output 5).Contains('filter_extension: .TXT') -and (Frame $output 5).Contains('matching_files: 1')) 'EXT combines with the name filter and ignores extension case'
+    Check ((Frame $output 6).Contains('filter_extension: .TXT') -and (Frame $output 6).Contains('matching_files: 1')) 'refresh keeps filters and recounts matches'
+    $zeroMatches = Frame $output 7
+    Check ($zeroMatches.Contains('matching_files: 0') -and $zeroMatches.Contains('[DIR]  context')) 'zero matches retain directory context'
+    Check (-not $zeroMatches.Contains('--- Next') -and -not $zeroMatches.Contains('--- Previous')) 'zero matches add no phantom pagination rows'
+    $cleared = Frame $output 8
+    Check ($cleared.Contains('filter_text: ') -and $cleared.Contains('filter_extension: ') -and $cleared.Contains('matching_files: 3')) 'CLEAR_FILTER removes both filters and restores root files'
+    $output = Run-Headless @('q') $filterRoot @('--filter', 'annual report', '--ext=.TXT')
+    Check ((Frame $output 0).Contains('filter_text: annual report') -and (Frame $output 0).Contains('filter_extension: .TXT') -and (Frame $output 0).Contains('matching_files: 1')) 'CLI filters accept separated name and equals extension forms'
+    foreach ($arguments in @('--headless --filter', '--headless --ext')) {
+        $result = Run-Cli $arguments
+        Check ($result.Code -eq 2 -and $result.Error.Contains('requires a value')) "missing filter option value is rejected: $arguments"
+    }
+    $output = Run-Headless @('FILTER', 'EXT', 'q') $filterRoot
+    Check ($output.Contains('Invalid filter event')) 'headless filter commands require a value'
+
     Write-Host "Results: $script:checks passed, 0 failed"
 } finally {
     if ($null -eq $oldConfig) { Remove-Item Env:TREEFILES_CONFIG -ErrorAction SilentlyContinue }

@@ -3,6 +3,7 @@
 #include <filesystem>
 #include <functional>
 #include <optional>
+#include <cstddef>
 #include <system_error>
 #include <vector>
 #include <set>
@@ -16,6 +17,11 @@ enum class SortOrder { asc, desc };
 struct SortOptions {
     SortKey key = SortKey::size;
     SortOrder order = SortOrder::desc;
+};
+
+struct FilterOptions {
+    std::string text;
+    std::string extension;
 };
 
 const char* sort_key_name(SortKey key);
@@ -47,6 +53,7 @@ struct ScanResult {
     ScanStatus status = ScanStatus::complete;
     std::vector<ScanIssue> diagnostics;
     std::vector<EntryInfo> entries;
+    std::size_t matching_files = 0;
 };
 
 struct ScanOptions {
@@ -55,8 +62,11 @@ struct ScanOptions {
     std::function<std::error_code(const std::filesystem::path&, const std::string&)> error_injector;
     bool reset_pagination = false;
     SortOptions sort;
+    FilterOptions filter;
 };
 
+bool entry_matches_filter(const EntryInfo& entry, const FilterOptions& filter);
+bool filter_is_active(const FilterOptions& filter);
 std::vector<EntryInfo> get_directory_entries(const std::filesystem::path& path = ".", int depth = 0);
 std::string human_readable_size(std::uintmax_t bytes);
 std::set<std::filesystem::path>& get_expanded_dirs();

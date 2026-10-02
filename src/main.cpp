@@ -56,7 +56,8 @@ static void headless_dump_frame(const std::vector<EntryInfo>& entries, int selec
                                 double last_scan_ms,
                                 int bar_fg, int bar_bg, int frame_num,
                                 int total_pages, int current_page, int page_size,
-                                const ScanResult& scan_result, SortOptions sort) {
+                                const ScanResult& scan_result, SortOptions sort,
+                                const FilterOptions& filter) {
     std::cout << "=== FRAME " << frame_num << " ===" << std::endl;
     std::cout << "current_path: " << current_path.u8string() << std::endl;
     std::cout << "selected_index: " << selected << std::endl;
@@ -65,6 +66,9 @@ static void headless_dump_frame(const std::vector<EntryInfo>& entries, int selec
     std::cout << "page_size: " << page_size << std::endl;
     std::cout << "sort_key: " << sort_key_name(sort.key) << std::endl;
     std::cout << "sort_order: " << sort_order_name(sort.order) << std::endl;
+    std::cout << "filter_text: " << filter.text << std::endl;
+    std::cout << "filter_extension: " << filter.extension << std::endl;
+    std::cout << "matching_files: " << scan_result.matching_files << std::endl;
     std::cout << "language: " << language_code() << std::endl;
     std::cout << "total_entries: " << entries.size() << std::endl;
     if (total_pages > 1) {
@@ -159,6 +163,11 @@ static int parse_headless_event(const std::string& line) {
     if (line == "REFRESH")     return 0x10001;
     if (line.rfind("CD ", 0) == 0) return 0x10002;
     if (line.rfind("SORT ", 0) == 0) return 0x10003;
+    if (line.rfind("FILTER ", 0) == 0) return 0x10004;
+    if (line == "FILTER") return 0x10004;
+    if (line.rfind("EXT ", 0) == 0) return 0x10005;
+    if (line == "EXT") return 0x10005;
+    if (line == "CLEAR_FILTER") return 0x10006;
     if (line == "BACKSPACE")   return KEY_BACKSPACE;
     if (line.rfind("COLOR ", 0) == 0) return 0x10000;
     if (line.size() == 1)      return line[0];
@@ -223,7 +232,7 @@ static void update_scroll(int selected, int& scroll_offset, int visible_rows) {
     }
 }
 
-static void reset_sort_view(int& selected, int& scroll_offset, bool& need_refresh) {
+static void reset_listing_view(int& selected, int& scroll_offset, bool& need_refresh) {
     reset_resto_state();
     selected = 0;
     scroll_offset = 0;
@@ -251,7 +260,8 @@ static ScanResult rebuild_tree_preserving_selection(
     std::vector<EntryInfo>& entries,
     int& selected,
     bool invalidate_sizes,
-    SortOptions sort) {
+    SortOptions sort,
+    const FilterOptions& filter) {
     std::filesystem::path selected_path;
     if (invalidate_sizes && selected >= 0 && selected < static_cast<int>(entries.size()) &&
         entries[selected].type != "[RESTO_NEXT]" && entries[selected].type != "[RESTO_PREV]")
@@ -263,6 +273,7 @@ static ScanResult rebuild_tree_preserving_selection(
     }
     ScanOptions options;
     options.sort = sort;
+    options.filter = filter;
     auto result = scan_tree_entries(current_path, expanded_dirs, page_size, options);
     entries = result.entries;
     if (invalidate_sizes && !selected_path.empty()) {
@@ -296,7 +307,7 @@ static bool navigate_to_root(const std::filesystem::path& requested_path,
                              int visible_rows, double& last_scan_ms,
                              const std::filesystem::path& select_on_return,
                              std::string& error_message,
-                             SortOptions sort) {
+                             SortOptions sort, const FilterOptions& filter) {
     namespace fs = std::filesystem;
     fs::path candidate = requested_path.is_absolute()
         ? requested_path : current_path / requested_path;
@@ -315,6 +326,7 @@ static bool navigate_to_root(const std::filesystem::path& requested_path,
     ScanOptions options;
     options.reset_pagination = true;
     options.sort = sort;
+    options.filter = filter;
     const auto started = std::chrono::steady_clock::now();
     auto next_scan = scan_tree_entries(candidate, {}, page_size, options);
     last_scan_ms = std::chrono::duration<double, std::milli>(
@@ -350,7 +362,8 @@ static bool navigate_to_parent(std::filesystem::path& current_path,
                                int page_size, std::vector<EntryInfo>& entries,
                                ScanResult& scan_result, int& selected, int& scroll_offset,
                                int visible_rows, double& last_scan_ms,
-                               std::string& error_message, SortOptions sort) {
+                               std::string& error_message, SortOptions sort,
+                               const FilterOptions& filter) {
     namespace fs = std::filesystem;
     std::error_code error;
     const fs::path absolute_path = fs::absolute(current_path, error).lexically_normal();
@@ -360,7 +373,7 @@ static bool navigate_to_parent(std::filesystem::path& current_path,
     if (parent.empty() || parent == absolute_path) return false;
     return navigate_to_root(parent, current_path, expanded_dirs, page_size, entries,
         scan_result, selected, scroll_offset, visible_rows, last_scan_ms,
-        absolute_path, error_message, sort);
+        absolute_path, error_message, sort, filter);
 }
 
 int main(int argc, char* argv[]) {
@@ -370,6 +383,7 @@ int main(int argc, char* argv[]) {
     bool show_version = false;
     int page_size = 30;
     SortOptions sort_options;
+    FilterOptions active_filter;
     std::filesystem::path start_path = ".";
 
     const auto arguments = command_line_arguments(argc, argv);
@@ -427,6 +441,26 @@ int main(int argc, char* argv[]) {
             if (!parse_sort_order(value, sort_options.order)) {
                 std::cerr << text(Text::SortOrderError) << "\n";
                 return 2;
+            }
+        } else if (arg == "--filter" || arg.rfind("--filter=", 0) == 0) {
+            if (arg == "--filter") {
+                if (i + 1 >= arguments.size() || arguments[i + 1].rfind("--", 0) == 0) {
+                    std::cerr << text(Text::FilterTextError) << "\n";
+                    return 2;
+                }
+                active_filter.text = arguments[++i];
+            } else {
+                active_filter.text = arg.substr(9);
+            }
+        } else if (arg == "--ext" || arg.rfind("--ext=", 0) == 0) {
+            if (arg == "--ext") {
+                if (i + 1 >= arguments.size() || arguments[i + 1].rfind("--", 0) == 0) {
+                    std::cerr << text(Text::FilterExtensionError) << "\n";
+                    return 2;
+                }
+                active_filter.extension = arguments[++i];
+            } else {
+                active_filter.extension = arg.substr(6);
             }
         } else if (!arg.empty() && arg[0] != '-') {
             start_path = std::filesystem::u8path(arg);
@@ -490,7 +524,7 @@ int main(int argc, char* argv[]) {
         auto rebuild_tree = [&](bool invalidate_sizes = false) {
             auto t0 = std::chrono::high_resolution_clock::now();
             scan_result = rebuild_tree_preserving_selection(current_path, expanded_dirs,
-                page_size, entries, selected, invalidate_sizes, sort_options);
+                page_size, entries, selected, invalidate_sizes, sort_options, active_filter);
             auto t1 = std::chrono::high_resolution_clock::now();
             last_scan_ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
             need_refresh = false;
@@ -524,7 +558,7 @@ int main(int argc, char* argv[]) {
         headless_dump_frame(entries, selected, scroll_offset, visible_rows,
                             current_path, expanded_dirs, last_scan_ms,
                             bar_fg, bar_bg, frame_num, total_pages, current_page, page_size,
-                            scan_result, sort_options);
+                            scan_result, sort_options, active_filter);
         frame_num++;
 
         std::string event_line;
@@ -566,7 +600,7 @@ int main(int argc, char* argv[]) {
                         std::string error;
                         if (!navigate_to_root(entry.full_path, current_path, expanded_dirs, page_size,
                             entries, scan_result, selected, scroll_offset, visible_rows, last_scan_ms,
-                            {}, error, sort_options)) {
+                            {}, error, sort_options, active_filter)) {
                             std::cout << "=== POPUP navigation_error ===\nmessage: "
                                       << text(Text::NavigationError) << error
                                       << "\n=== END POPUP ===\n";
@@ -588,7 +622,7 @@ int main(int argc, char* argv[]) {
             case 127: {
                 std::string error;
                 if (!navigate_to_parent(current_path, expanded_dirs, page_size, entries,
-                    scan_result, selected, scroll_offset, visible_rows, last_scan_ms, error, sort_options) &&
+                    scan_result, selected, scroll_offset, visible_rows, last_scan_ms, error, sort_options, active_filter) &&
                     !error.empty()) {
                     std::cout << "=== POPUP navigation_error ===\nmessage: "
                               << text(Text::NavigationError) << error
@@ -602,7 +636,7 @@ int main(int argc, char* argv[]) {
                 std::string error;
                 if (value.empty() || !navigate_to_root(std::filesystem::u8path(value), current_path,
                     expanded_dirs, page_size, entries, scan_result, selected, scroll_offset,
-                    visible_rows, last_scan_ms, {}, error, sort_options)) {
+                    visible_rows, last_scan_ms, {}, error, sort_options, active_filter)) {
                     if (error.empty()) error = std::make_error_code(std::errc::invalid_argument).message();
                     std::cout << "=== POPUP navigation_error ===\nmessage: "
                               << text(Text::NavigationError) << error
@@ -619,7 +653,7 @@ int main(int argc, char* argv[]) {
                 if (!(event >> extra) && parse_sort_key(key_value, requested.key) &&
                     parse_sort_order(order_value, requested.order)) {
                     sort_options = requested;
-                    reset_sort_view(selected, scroll_offset, need_refresh);
+                    reset_listing_view(selected, scroll_offset, need_refresh);
                 } else {
                     std::cout << "=== POPUP error ===\nmessage: " << text(Text::InvalidSortEvent)
                               << "\n=== END POPUP ===\n";
@@ -631,13 +665,42 @@ int main(int argc, char* argv[]) {
             case 'S':
                 sort_options.key = sort_options.key == SortKey::size ? SortKey::name
                     : sort_options.key == SortKey::name ? SortKey::mtime : SortKey::size;
-                reset_sort_view(selected, scroll_offset, need_refresh);
+                reset_listing_view(selected, scroll_offset, need_refresh);
                 break;
             case 't':
             case 'T':
                 sort_options.order = sort_options.order == SortOrder::asc
                     ? SortOrder::desc : SortOrder::asc;
-                reset_sort_view(selected, scroll_offset, need_refresh);
+                reset_listing_view(selected, scroll_offset, need_refresh);
+                break;
+            case 0x10004:
+                if (event_line == "FILTER") {
+                    std::cout << "=== POPUP error ===\nmessage: " << text(Text::InvalidFilterEvent)
+                              << "\n=== END POPUP ===\n";
+                    popup_handled = true;
+                } else {
+                    active_filter.text = event_line.substr(7);
+                    reset_listing_view(selected, scroll_offset, need_refresh);
+                }
+                break;
+            case 0x10005:
+                if (event_line == "EXT") {
+                    std::cout << "=== POPUP error ===\nmessage: " << text(Text::InvalidFilterEvent)
+                              << "\n=== END POPUP ===\n";
+                    popup_handled = true;
+                } else {
+                    active_filter.extension = event_line.substr(4);
+                    reset_listing_view(selected, scroll_offset, need_refresh);
+                }
+                break;
+            case 0x10006:
+                active_filter = {};
+                reset_listing_view(selected, scroll_offset, need_refresh);
+                break;
+            case 'f':
+            case 'F':
+                active_filter = {};
+                reset_listing_view(selected, scroll_offset, need_refresh);
                 break;
             case KEY_UP:
             case 'k':
@@ -808,7 +871,7 @@ int main(int argc, char* argv[]) {
                 headless_dump_frame(entries, selected, scroll_offset, visible_rows,
                                     current_path, expanded_dirs, last_scan_ms,
                                     bar_fg, bar_bg, frame_num, tp, cp, page_size,
-                                    scan_result, sort_options);
+                                    scan_result, sort_options, active_filter);
                 frame_num++;
             }
         }
@@ -871,7 +934,7 @@ int main(int argc, char* argv[]) {
                 auto t0 = std::chrono::high_resolution_clock::now();
                 try {
                     scan_result = rebuild_tree_preserving_selection(current_path, expanded_dirs,
-                        page_size, entries, selected, refresh_next_scan, sort_options);
+                        page_size, entries, selected, refresh_next_scan, sort_options, active_filter);
                 } catch (const std::filesystem::filesystem_error& ex) {
                     scan_result.status = ScanStatus::failed;
                     scan_result.diagnostics.push_back({ex.path1(), "scan", ex.code()});
@@ -926,10 +989,11 @@ int main(int argc, char* argv[]) {
         }
 
         clear();
-        draw_header(cols, current_path, current_page, total_pages, sort_options);
+        draw_header(cols, current_path, current_page, total_pages, sort_options,
+                    active_filter, scan_result.matching_files);
         print_directory_entries(entries, selected, scroll_offset, visible_rows, (int)entries.size(), 1, 2);
         draw_footer(rows, cols, selected, (int)entries.size(), last_scan_ms,
-                    !scan_result.diagnostics.empty());
+                    !scan_result.diagnostics.empty(), active_filter, scan_result.matching_files);
         refresh();
         input = getch();
         switch (input) {
@@ -946,13 +1010,22 @@ int main(int argc, char* argv[]) {
             case 'S':
                 sort_options.key = sort_options.key == SortKey::size ? SortKey::name
                     : sort_options.key == SortKey::name ? SortKey::mtime : SortKey::size;
-                reset_sort_view(selected, scroll_offset, need_refresh);
+                reset_listing_view(selected, scroll_offset, need_refresh);
                 break;
             case 't':
             case 'T':
                 sort_options.order = sort_options.order == SortOrder::asc
                     ? SortOrder::desc : SortOrder::asc;
-                reset_sort_view(selected, scroll_offset, need_refresh);
+                reset_listing_view(selected, scroll_offset, need_refresh);
+                break;
+            case '/':
+                if (prompt_for_filter(active_filter))
+                    reset_listing_view(selected, scroll_offset, need_refresh);
+                break;
+            case 'f':
+            case 'F':
+                active_filter = {};
+                reset_listing_view(selected, scroll_offset, need_refresh);
                 break;
             case '\n':
             case KEY_ENTER:
@@ -962,7 +1035,7 @@ int main(int argc, char* argv[]) {
                         std::string error;
                         if (!navigate_to_root(entry.full_path, current_path, expanded_dirs, page_size,
                             entries, scan_result, selected, scroll_offset, visible_rows,
-                            last_scan_ms, {}, error, sort_options))
+                            last_scan_ms, {}, error, sort_options, active_filter))
                             confirm_popup(std::string(text(Text::NavigationError)) + error);
                     } else if (entry.type == "[RESTO_NEXT]") {
                         expand_resto(entry.full_path);
@@ -980,7 +1053,7 @@ int main(int argc, char* argv[]) {
             case 127: {
                 std::string error;
                 if (!navigate_to_parent(current_path, expanded_dirs, page_size, entries,
-                    scan_result, selected, scroll_offset, visible_rows, last_scan_ms, error, sort_options) &&
+                    scan_result, selected, scroll_offset, visible_rows, last_scan_ms, error, sort_options, active_filter) &&
                     !error.empty())
                     confirm_popup(std::string(text(Text::NavigationError)) + error);
                 break;
@@ -992,7 +1065,7 @@ int main(int argc, char* argv[]) {
                     std::string error;
                     if (!navigate_to_root(std::filesystem::u8path(value), current_path,
                         expanded_dirs, page_size, entries, scan_result, selected, scroll_offset,
-                        visible_rows, last_scan_ms, {}, error, sort_options))
+                        visible_rows, last_scan_ms, {}, error, sort_options, active_filter))
                         confirm_popup(std::string(text(Text::NavigationError)) + error);
                 }
                 break;

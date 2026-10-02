@@ -120,6 +120,13 @@ static void test_links_are_listed_without_traversal() {
         [&](const EntryInfo& entry) { return entry.full_path == target / "inside.txt"; });
     CHECK(target_file_count == 1);
 
+    ScanOptions link_filter;
+    link_filter.filter.text = "FILE-LINK";
+    const auto filtered_links = scan_tree_entries(root, {}, 30, link_filter);
+    CHECK(filtered_links.matching_files == 1);
+    CHECK(find_entry(filtered_links, "file-link"));
+    CHECK(!find_entry(filtered_links, "directory-link"));
+
     const fs::path root_link = root / "root-link";
     fs::create_directory_symlink(target, root_link, error);
     if (!error) {
@@ -257,12 +264,100 @@ static void test_sorting_and_missing_modification_times() {
     CHECK(!parse_sort_order("up", order));
 }
 
+static void test_filename_and_extension_filters() {
+    const fs::path root = test_directory.path / "filters";
+    fs::create_directories(root / "context");
+    fs::create_directories(root / "empty-context");
+    write_file(root / "Annual Report.TXT", "0123456789");
+    write_file(root / "report.csv", "12");
+    write_file(root / "other.txt", "12345");
+    write_file(root / fs::u8path("canci\u00f3n.txt"), "lower accent");
+    write_file(root / "context" / "deep-report.log", "1234567");
+    write_file(root / "context" / "unmatched.bin", "12345678901");
+
+    ScanOptions options;
+    options.reset_pagination = true;
+    options.filter.text = "report";
+    const auto by_name = scan_tree_entries(root, {root / "context"}, 30, options);
+    CHECK(by_name.matching_files == 3);
+    CHECK(find_entry(by_name, "context") && find_entry(by_name, "context")->expanded);
+    CHECK(find_entry(by_name, "empty-context"));
+    CHECK(find_entry(by_name, "Annual Report.TXT"));
+    CHECK(find_entry(by_name, "report.csv"));
+    CHECK(find_entry(by_name, "deep-report.log"));
+    CHECK(!find_entry(by_name, "other.txt"));
+    CHECK(!find_entry(by_name, "unmatched.bin"));
+    const auto context_size = find_entry(by_name, "context")->size;
+    CHECK(context_size == 18);
+
+    options.filter.extension = ".TXT";
+    const auto combined = scan_tree_entries(root, {root / "context"}, 30, options);
+    CHECK(combined.matching_files == 1);
+    CHECK(find_entry(combined, "Annual Report.TXT"));
+    CHECK(!find_entry(combined, "report.csv"));
+    CHECK(!find_entry(combined, "deep-report.log"));
+    CHECK(find_entry(combined, "context")->size == context_size);
+
+    options.filter = {};
+    options.filter.extension = "tXt";
+    const auto by_extension = scan_tree_entries(root, {}, 30, options);
+    CHECK(by_extension.matching_files == 3);
+    CHECK(find_entry(by_extension, "Annual Report.TXT"));
+    CHECK(find_entry(by_extension, "other.txt"));
+    CHECK(find_entry(by_extension, fs::u8path("canci\u00f3n.txt").u8string()));
+    CHECK(!find_entry(by_extension, "report.csv"));
+
+    options.filter = {"CANCI\u00f3N", "txt"};
+    const auto lowercase_accent = scan_tree_entries(root, {}, 30, options);
+    CHECK(lowercase_accent.matching_files == 1);
+    CHECK(find_entry(lowercase_accent, fs::u8path("canci\u00f3n.txt").u8string()));
+    options.filter.text = "canci\u00d3N";
+    const auto different_accent_case = scan_tree_entries(root, {}, 30, options);
+    CHECK(different_accent_case.matching_files == 0);
+
+    options.filter = {"no-such-name", "log"};
+    const auto no_matches = scan_tree_entries(root, {root / "context"}, 30, options);
+    CHECK(no_matches.matching_files == 0);
+    CHECK(find_entry(no_matches, "context"));
+    CHECK(find_entry(no_matches, "empty-context"));
+    CHECK(!find_entry(no_matches, "deep-report.log"));
+    CHECK(std::none_of(no_matches.entries.begin(), no_matches.entries.end(), [](const EntryInfo& entry) {
+        return entry.type == "[RESTO_NEXT]" || entry.type == "[RESTO_PREV]";
+    }));
+
+    const fs::path paged_root = test_directory.path / "filter-pagination";
+    fs::create_directories(paged_root);
+    for (int index = 0; index < 12; ++index)
+        write_file(paged_root / ("file_" + std::to_string(index) + ".txt"), "x");
+    write_file(paged_root / "needle.txt", "x");
+    reset_resto_state();
+    expand_resto(paged_root);
+    CHECK(get_current_page(paged_root) == 1);
+    ScanOptions paged_options;
+    paged_options.filter.text = "needle";
+    const auto one_match = scan_tree_entries(paged_root, {}, 1, paged_options);
+    CHECK(one_match.matching_files == 1);
+    CHECK(one_match.entries.size() == 1);
+    CHECK(one_match.entries.front().name == "needle.txt");
+    CHECK(get_current_page(paged_root) == 0);
+    reset_resto_state();
+
+    EntryInfo directory_link{"[LINK]", "linked-folder", root / "linked-folder", 0};
+    EntryInfo text_link{"[LINK]", "linked.txt", root / "linked.txt", 0};
+    CHECK(!entry_matches_filter(directory_link, {"linked", "txt"}));
+    CHECK(entry_matches_filter(text_link, {"LINKED", ".TXT"}));
+    CHECK(entry_matches_filter(directory_link, {"", ""}));
+    CHECK(filter_is_active({"", "."}) == false);
+    CHECK(!filter_is_active({"", ""}));
+}
+
 int main() {
     fs::create_directories(test_directory.path);
     test_child_error_keeps_accessible_results();
     test_root_error_is_reported_as_failure();
     test_links_are_listed_without_traversal();
     test_sorting_and_missing_modification_times();
+    test_filename_and_extension_filters();
     std::cout << "test_scan: PASS\n";
     return 0;
 }

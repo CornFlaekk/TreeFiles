@@ -535,6 +535,48 @@ for argument in "--sort" "--sort=type" "--order" "--order=sideways"; do
 done
 
 echo ""
+echo "=== Scenario 21: Filename and extension filters ==="
+filter_root="$TEST_DIR/filter-root"
+filter_context="$filter_root/context"
+mkdir -p "$filter_context"
+printf '12345678' > "$filter_root/Annual Report.TXT"
+printf '1234' > "$filter_root/report.csv"
+printf '123' > "$filter_root/other.txt"
+printf '12345678901234567890' > "$filter_context/deep-report.log"
+printf '1234567890' > "$filter_context/unmatched.bin"
+output=$(printf 'e\nFILTER annual report\nENTER\nBACKSPACE\nEXT .TXT\nREFRESH\nFILTER missing\nCLEAR_FILTER\nq\n' | "$BINARY" --headless "$filter_root")
+f2=$(extract_frame "$output" 2)
+check "FILTER preserves spaces and matches filename case-insensitively" "$f2" 'filter_text: annual report'
+check "name filter counts only matching files" "$f2" 'matching_files: 1'
+check "name filter retains context directories and matching file" "$f2" 'Annual Report.TXT'
+check "filter resets selection and scroll" "$f2" 'selected_index: 0'
+f3=$(extract_frame "$output" 3)
+check "Enter preserves filters while changing root" "$f3" "current_path: $filter_context"
+f4=$(extract_frame "$output" 4)
+check "Backspace preserves filters" "$f4" 'filter_text: annual report'
+f5=$(extract_frame "$output" 5)
+check "EXT combines filters and ignores extension case" "$f5" 'filter_extension: .TXT'
+check "combined filters count the one matching file" "$f5" 'matching_files: 1'
+f6=$(extract_frame "$output" 6)
+check "refresh keeps filters" "$f6" 'filter_extension: .TXT'
+f7=$(extract_frame "$output" 7)
+check "zero matches retain the context directory" "$f7" 'context'
+check "zero matches are counted" "$f7" 'matching_files: 0'
+check_not "zero matches have no phantom next page" "$f7" 'Next'
+f8=$(extract_frame "$output" 8)
+check "CLEAR_FILTER clears filename and extension" "$f8" 'filter_extension: '
+check "clearing restores root files" "$f8" 'matching_files: 3'
+output=$(printf 'q\n' | "$BINARY" --headless --filter "Annual Report" --ext=.TXT "$filter_root")
+check "CLI accepts filters containing spaces" "$(extract_frame "$output" 0)" 'filter_text: annual report'
+check "CLI reports canonical matching count" "$(extract_frame "$output" 0)" 'matching_files: 1'
+for argument in filter ext; do
+    if output=$("$BINARY" --headless "--$argument" 2>&1); then status=0; else status=$?; fi
+    check "missing filter value rejected: $argument" "$status" '^2$'
+done
+output=$(printf 'FILTER\nEXT\nq\n' | "$BINARY" --headless "$filter_root")
+check "bare headless filter events report an error" "$output" 'Invalid filter event'
+
+echo ""
 # ============================================================
 cleanup
 
