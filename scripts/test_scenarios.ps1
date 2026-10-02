@@ -431,6 +431,53 @@ try {
     $output = Run-Headless @('FILTER', 'EXT', 'q') $filterRoot
     Check ($output.Contains('Invalid filter event')) 'headless filter commands require a value'
 
+    # Preferences survive process restarts, while ordinary CLI overrides remain session-only.
+    $output = Run-Headless @('q') $bigDirectory @('--lang=es', '--page-size=7', '--save-settings')
+    Check ((Frame $output 0).Contains('language: es') -and (Frame $output 0).Contains('page_size: 7')) 'save-settings persists language and page size'
+    $savedPreferences = [IO.File]::ReadAllText($env:TREEFILES_CONFIG)
+    Check ($savedPreferences.Contains("language=es") -and $savedPreferences.Contains("page_size=7")) 'saved preferences are written to config'
+    $output = Run-Headless @('q') $bigDirectory
+    Check ((Frame $output 0).Contains('language: es') -and (Frame $output 0).Contains('page_size: 7')) 'language and page size load in a later process'
+    $output = Run-Headless @('q') $bigDirectory @('--lang=en', '--page-size=2')
+    Check ((Frame $output 0).Contains('language: en') -and (Frame $output 0).Contains('page_size: 2')) 'CLI preferences override saved values for this session'
+    Check (([IO.File]::ReadAllText($env:TREEFILES_CONFIG)).Contains("language=es") -and ([IO.File]::ReadAllText($env:TREEFILES_CONFIG)).Contains("page_size=7")) 'session overrides do not alter saved preferences'
+    $output = Run-Headless @('COLOR red blue', 'q') $bigDirectory @('--lang=en', '--page-size=2')
+    Check ((Frame $output 1).Contains('bar_fg: 1') -and (Frame $output 1).Contains('bar_bg: 4')) 'color selection still applies with CLI preference overrides'
+    $savedPreferences = [IO.File]::ReadAllText($env:TREEFILES_CONFIG)
+    Check ($savedPreferences.Contains("language=es") -and $savedPreferences.Contains("page_size=7") -and $savedPreferences.Contains("foreground=red") -and $savedPreferences.Contains("background=blue")) 'color save preserves persisted language and page size'
+    $output = Run-Headless @('q') $bigDirectory
+    Check ((Frame $output 0).Contains('language: es') -and (Frame $output 0).Contains('page_size: 7') -and (Frame $output 0).Contains('bar_fg: 1') -and (Frame $output 0).Contains('bar_bg: 4')) 'all persisted preferences reload together'
+
+    $persistedHash = (Get-FileHash -LiteralPath $env:TREEFILES_CONFIG -Algorithm SHA256).Hash
+    $result = Run-Cli '--help --save-settings --lang en --page-size 4'
+    Check ($result.Code -eq 0 -and (Get-FileHash -LiteralPath $env:TREEFILES_CONFIG -Algorithm SHA256).Hash -eq $persistedHash) 'help never writes preferences'
+    $result = Run-Cli '--version --save-settings --lang en --page-size 4'
+    Check ($result.Code -eq 0 -and (Get-FileHash -LiteralPath $env:TREEFILES_CONFIG -Algorithm SHA256).Hash -eq $persistedHash) 'version never writes preferences'
+    $result = Run-Cli ('--save-settings --page-size 0 "' + $bigDirectory + '"')
+    Check ($result.Code -eq 2 -and (Get-FileHash -LiteralPath $env:TREEFILES_CONFIG -Algorithm SHA256).Hash -eq $persistedHash) 'invalid options never write preferences'
+    $invalidRoot = Join-Path $testRoot 'missing-root'
+    $result = Run-Cli ('--save-settings --lang en --page-size 4 "' + $invalidRoot + '"')
+    Check ($result.Code -eq 1 -and (Get-FileHash -LiteralPath $env:TREEFILES_CONFIG -Algorithm SHA256).Hash -eq $persistedHash) 'invalid root never writes preferences'
+    $previousConfig = $env:TREEFILES_CONFIG
+    try {
+        $missingConfig = Join-Path $testRoot 'help-must-not-create/config.ini'
+        $env:TREEFILES_CONFIG = $missingConfig
+        $result = Run-Cli '--help --save-settings'
+        Check ($result.Code -eq 0 -and -not (Test-Path -LiteralPath $missingConfig)) 'help does not create a new config file'
+    } finally { $env:TREEFILES_CONFIG = $previousConfig }
+
+    $previousConfig = $env:TREEFILES_CONFIG
+    $blockedConfig = Join-Path $testRoot 'blocked.ini'
+    New-Item -ItemType Directory -Path $blockedConfig | Out-Null
+    $blockedSentinel = Join-Path $blockedConfig 'keep.txt'
+    [IO.File]::WriteAllText($blockedSentinel, 'preserve')
+    try {
+        $env:TREEFILES_CONFIG = $blockedConfig
+        $result = Run-Cli ('--save-settings --lang es --page-size 7 "' + $bigDirectory + '"')
+        Check ($result.Code -eq 1 -and (Test-Path -LiteralPath $blockedSentinel)) 'failed atomic save preserves existing target'
+        Check (@(Get-ChildItem -LiteralPath $testRoot -Filter 'blocked.ini.tmp.*').Count -eq 0) 'failed preference save removes temporary files'
+    } finally { $env:TREEFILES_CONFIG = $previousConfig }
+
     Write-Host "Results: $script:checks passed, 0 failed"
 } finally {
     if ($null -eq $oldConfig) { Remove-Item Env:TREEFILES_CONFIG -ErrorAction SilentlyContinue }
