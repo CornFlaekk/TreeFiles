@@ -19,6 +19,7 @@ TreeFiles/
 ├── .gitignore
 ├── include/
 │   ├── file_utils.h           # EntryInfo struct, file system functions
+│   ├── scan_controller.h      # Managed asynchronous scans and progress
 │   ├── ui_utils.h             # TUI rendering functions
 │   ├── localization.h         # English/Spanish string catalog
 │   ├── settings.h             # Saved bar colors
@@ -27,6 +28,7 @@ TreeFiles/
 ├── src/
 │   ├── main.cpp               # Entry point: main loop, keyboard handling
 │   ├── file_utils.cpp         # Directory traversal, size calc, tree building
+│   ├── scan_controller.cpp    # Worker lifecycle, cancellation, generations
 │   └── ui_utils.cpp           # TUI rendering: borders, bars, popups
 ├── tests/
 │   ├── test_human_readable_size.cpp
@@ -34,7 +36,8 @@ TreeFiles/
 │   ├── test_pagination.cpp
 │   ├── test_settings.cpp
 │   ├── test_localization.cpp
-│   └── test_scan.cpp
+│   ├── test_scan.cpp
+│   └── test_scan_controller.cpp
 ├── scripts/
 │   ├── run_interactive.sh     # tmux-based interactive testing
 │   ├── test_scenarios.sh      # Headless integration test scenarios
@@ -114,6 +117,9 @@ Each line is one event:
 | `r` / `R` / `REFRESH` | Refresh | Clear cached sizes and rescan the current root |
 | `COLOR red blue` | Color setting | Save foreground/background using canonical English names |
 | `w` / `W` | Warnings | Show scan diagnostics (interactive); headless prints a diagnostic popup record |
+| `SCAN_START` | Async scan | Start a headless background scan; synchronous mode remains the default |
+| `CANCEL_SCAN` | Cancel async scan | Request cooperative cancellation without replacing the last snapshot |
+| `WAIT_SCAN` | Wait for async scan | Join active and replacement scans and emit their final state |
 
 Lines starting with `#` are comments and ignored. Empty lines are skipped.
 
@@ -139,7 +145,8 @@ Each frame contains:
 - `language` (default en; selected with `--lang en|es`)
 - `expanded_dirs` set
 - `last_scan_ms`, `bar_fg`, `bar_bg`
-- `scan_status` (`complete`, `partial` or `failed`), `diagnostics_count` and one `diagnostic_N` record per filesystem issue
+- `scan_status` (`complete`, `partial`, `cancelled` or `failed`), `diagnostics_count` and one `diagnostic_N` record per filesystem issue
+- Async state and progress: `async_scan_state`, `async_scan_root`, `scan_progress_entries`, `scan_progress_directories`, `scan_progress_bytes`, and `scan_progress_elapsed_seconds`
 - `entries:` list with index, marker (`>>>` for selected), indent, type, name, size, percentage, and a proportional bar using `█`/`░` (40 chars wide)
 
 ### Optional path argument
@@ -166,14 +173,14 @@ Screenshots are saved to `screenshots/` for visual review. The script starts the
 
 ```
 main.cpp (event loop)
-  ├── scan_tree_entries() → file_utils.cpp (tree plus scan status and filesystem diagnostics)
+  ├── ScanController → scan_tree_entries() (managed worker; tree, status and diagnostics)
   ├── build_tree_entries()    → file_utils.cpp   (builds sorted entry list)
   ├── get_directory_size()    → file_utils.cpp   (cached recursive size)
   ├── print_directory_entries() → ui_utils.cpp   (renders bars + text)
   ├── confirm_popup()         → ui_utils.cpp     (modal yes/no)
   ├── bar_color_selection_popup() → ui_utils.cpp (color picker)
   ├── draw_footer()           → ui_utils.cpp     (keyboard shortcuts)
-  └── show_loading_animation() → ui_utils.cpp    (async loading spinner)
+  └── draw_scan_status() → ui_utils.cpp (main-thread progress/status line)
 ```
 
 ### EntryInfo struct (file_utils.h)
@@ -198,7 +205,8 @@ struct EntryInfo {
 | `visible_rows` | int | Number of rows available for entries |
 | `entries` | vector<EntryInfo> | Current flat list of visible entries |
 | `expanded_dirs` | set<path> | Which directories are expanded |
-| `need_refresh` | bool | Force rebuild on next iteration |
+| `need_refresh` | bool | Queue a scan on the next event-loop iteration |
+| `ScanController` | RAII worker controller | Owns the active worker, cancellation, pending request and generation |
 | `bar_fg`/`bar_bg` | int | Bar color pair (ncurses color constants) |
 
 ### Color Pairs
@@ -213,7 +221,7 @@ struct EntryInfo {
 - **Types:** Prefer `std::filesystem::path` for paths, `std::uintmax_t` for file sizes.
 - **Error handling:** Try/catch for filesystem operations, return 0/bool for failures.
 - **Scanning:** Use `ScanResult`/`ScanIssue`; never turn a filesystem error into a successful zero-byte size. Do not traverse symlinks or Windows directory junctions.
-- **Thread safety:** `std::mutex` guards the directory size cache. `std::atomic<bool>` for loading flags.
+- **Thread safety:** `std::mutex` guards the directory size cache and worker progress. `ScanController` owns and joins its C++17 worker; cancellation uses `std::atomic<bool>`. A worker must not call curses or mutate UI state. Async scans isolate pagination and defer cache writes until the main thread accepts the current generation.
 - **Dependencies:** C++17 standard library + the platform's curses backend. Keep platform-specific APIs in `platform_utils.cpp`.
 - **Localization:** All UI strings go through `localization.h`. English is the default; Spanish is selected with `--lang es`. Keep headless protocol keys and persisted color names stable.
 - **Configuration:** `settings.cpp` reads/writes colors, replacing the config atomically through `platform_utils.cpp`. Always set `TREEFILES_CONFIG` to an owned fixture in integration tests.
@@ -223,6 +231,7 @@ struct EntryInfo {
 ## Testing Guidelines
 
 - Unit tests go in `tests/test_<component>.cpp`. Each is a standalone executable returning 0 on success, non-zero on failure.
+- Asynchronous scan tests use deterministic callbacks/barriers rather than sleeps or oversized filesystem fixtures.
 - Use standard `assert()` for simple checks, or custom `check()` macros for descriptive output.
 - Integration scenarios in `scripts/test_scenarios.sh` (Linux) and `scripts/test_scenarios.ps1` (Windows) use headless mode with piped events. CTest runs the appropriate suite. `TREEFILES_BINARY` lets the Bash suite use an already-built binary.
 - Visual verification via `scripts/run_interactive.sh` and `screenshots/`.

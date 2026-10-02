@@ -6,12 +6,15 @@ enum class Text {
     MoveBinding, PageBinding, ExpandBinding, OpenBinding, DeleteBinding, ColorBinding, QuitBinding,
     Scan, Yes, No, BackgroundColor, ForegroundColor,
     Black, Red, Green, Yellow, Blue, Magenta, Cyan, White,
-    Loading, DeletePrompt, Error, ColorsUnsupported, Usage, PageSizeError, LanguageError,
+    DeletePrompt, Error, ColorsUnsupported, Usage, PageSizeError, LanguageError,
     UnknownOption, UsageHint, UnreadableDirectory, ConfigLoadWarning, ConfigSaveWarning,
     OpenPathError, OpenCommandError, Bytes, InvalidColorEvent,
     WarningsBinding, ScanWarnings, ScanDiagnostics, PressAnyKey, SizePartial, SizeUnavailable,
     RefreshBinding, EnterDirectoryBinding, ParentDirectoryBinding, ChangeRootBinding,
     PathPrompt, PathPromptHint, NavigationError,
+    ScanRunning, ScanCancelling, ScanReplacing, ScanShowingSnapshot,
+    ScanDirectories, ScanEntries, ScanBytes, ScanActionsDisabled,
+    ScanCancelledStatus, ScanFailedStatus, CancelScanBinding,
     Count
 };
 

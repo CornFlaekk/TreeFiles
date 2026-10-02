@@ -10,7 +10,7 @@ const std::array<const char*, text_count> english = {
     "[j/k] move", "[N/P] page", "[h/l/E] fold", "[Spc] open", "[Del] delete", "[B] color", "[Q] quit",
     "Scan", " Yes ", " No ", "Bar BACKGROUND color:", "Bar TEXT color:",
     "Black", "Red", "Green", "Yellow", "Blue", "Magenta", "Cyan", "White",
-    "Loading", "Delete", "Error", "Colors are not supported by this terminal.",
+    "Delete", "Error", "Colors are not supported by this terminal.",
     "Usage: treefiles [--headless] [--page-size N] [--lang en|es] [directory]\n"
     "  --page-size N  Entries per directory page (default: 30).\n"
     "                 Positive integer, maximum 2147483647.\n"
@@ -28,14 +28,17 @@ const std::array<const char*, text_count> english = {
     "[W] warnings", "Scan completed with omitted items", "Scan diagnostics", "Press any key",
     "partial", "unavailable", "[R] refresh", "[Enter] enter", "[Bksp] parent", "[O] path",
     "Directory path (relative to the current root or absolute):", "Enter accepts, Esc cancels",
-    "Cannot change directory: "
+    "Cannot change directory: ", "Scanning", "Cancelling scan", "Replacing scan",
+    "showing previous snapshot", "directories", "entries", "bytes",
+    "Delete is disabled while scanning", "Scan cancelled", "Scan failed; previous view remains",
+    "[Esc] cancel scan"
 };
 const std::array<const char*, text_count> spanish_text = {
     "Anterior", "Siguiente", "Pag", "Navegar", "Acciones", "Sistema",
     "[j/k] mover", "[N/P] pag", "[h/l/E] exp", "[Spc] abrir", "[Del] borrar", "[B] color", "[Q] salir",
     "Escaneo", " S\u00ed ", " No ", "Color de FONDO barra:", "Color de TEXTO barra:",
     "Negro", "Rojo", "Verde", "Amarillo", "Azul", "Magenta", "Cian", "Blanco",
-    "Cargando", "Borrar", "Error", "Colores no soportados en esta terminal.",
+    "Borrar", "Error", "Colores no soportados en esta terminal.",
     "Uso: treefiles [--headless] [--page-size N] [--lang en|es] [directorio]\n"
     "  --page-size N  Elementos por p\u00e1gina y directorio (predeterminado: 30).\n"
     "                 Entero positivo, m\u00e1ximo 2147483647.\n"
@@ -53,7 +56,10 @@ const std::array<const char*, text_count> spanish_text = {
     "[W] avisos", "Escaneo terminado con elementos omitidos", "Diagn\u00f3sticos del escaneo", "Pulsa cualquier tecla",
     "parcial", "no disponible", "[R] actualizar", "[Enter] entrar", "[Bksp] padre", "[O] ruta",
     "Ruta del directorio (relativa a la ra\u00edz actual o absoluta):", "Enter acepta, Esc cancela",
-    "No se puede cambiar de directorio: "
+    "No se puede cambiar de directorio: ", "Escaneando", "Cancelando escaneo", "Reemplazando escaneo",
+    "mostrando la vista anterior", "directorios", "elementos", "bytes",
+    "Borrar est\u00e1 deshabilitado durante el escaneo", "Escaneo cancelado", "Fall\u00f3 el escaneo; se conserva la vista anterior",
+    "[Esc] cancelar escaneo"
 };
 }
 

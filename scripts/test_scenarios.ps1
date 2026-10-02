@@ -377,6 +377,31 @@ try {
         }
     }
 
+    $asyncRoot = Join-Path $testRoot 'async scan root'
+    $asyncChild = Join-Path $asyncRoot 'nested folder'
+    New-Item -ItemType Directory -Path $asyncChild -Force | Out-Null
+    Write-TestFile (Join-Path $asyncRoot 'root.txt') 12
+    Write-TestFile (Join-Path $asyncChild 'nested.txt') 20
+    $output = Run-Headless @('SCAN_START', 'WAIT_SCAN', 'q') $asyncRoot
+    Check ((Frame $output 1).Contains('async_scan_state: running')) 'SCAN_START keeps the previous snapshot visible'
+    $completedFrame = Frame $output 2
+    Check ($completedFrame.Contains('async_scan_state: complete')) 'WAIT_SCAN publishes the completed generation'
+    $processedEntries = [int]([regex]::Match($completedFrame, 'scan_progress_entries: (\d+)').Groups[1].Value)
+    Check ($processedEntries -ge 2 -and $completedFrame.Contains('scan_progress_bytes: 32')) 'completed scan reports entry and byte progress'
+
+    $output = Run-Headless @('SCAN_START', 'CANCEL_SCAN', 'WAIT_SCAN', 'q') $asyncRoot
+    Check ((Frame $output 2).Contains('async_scan_state: cancelling')) 'CANCEL_SCAN requests cooperative cancellation'
+    $cancelledFrame = Frame $output 3
+    Check ($cancelledFrame.Contains('async_scan_state: cancelled')) 'WAIT_SCAN joins a cancelled worker'
+    $initialEntryCount = [regex]::Match((Frame $output 0), 'total_entries: (\d+)').Groups[1].Value
+    $cancelledEntryCount = [regex]::Match($cancelledFrame, 'total_entries: (\d+)').Groups[1].Value
+    Check ($initialEntryCount -eq $cancelledEntryCount) 'cancellation keeps the previous snapshot intact'
+
+    $output = Run-Headless @('SCAN_START', ('CD ' + $asyncChild), 'WAIT_SCAN', 'q') $asyncRoot
+    Check ((Frame $output 2).Contains("current_path: $asyncRoot") -and (Frame $output 2).Contains("async_scan_root: $asyncChild")) 'root change replaces an in-flight scan without swapping snapshots'
+    $replacementFrame = Frame $output 3
+    Check ($replacementFrame.Contains("current_path: $asyncChild") -and $replacementFrame.Contains('nested.txt')) 'only the newest root generation is published'
+
     Write-Host "Results: $script:checks passed, 0 failed"
 } finally {
     if ($null -eq $oldConfig) { Remove-Item Env:TREEFILES_CONFIG -ErrorAction SilentlyContinue }

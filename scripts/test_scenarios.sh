@@ -505,6 +505,31 @@ else
 fi
 
 echo ""
+echo "=== Scenario 20: Asynchronous scan control ==="
+async_root="$TEST_DIR/async scan root"
+async_child="$async_root/nested folder"
+mkdir -p "$async_child"
+printf '123456789012' > "$async_root/root.txt"
+printf '12345678901234567890' > "$async_child/nested.txt"
+output=$(printf 'SCAN_START\nWAIT_SCAN\nq\n' | "$BINARY" --headless "$async_root")
+check "SCAN_START retains the old snapshot while running" "$(extract_frame "$output" 1)" 'async_scan_state: running'
+f2=$(extract_frame "$output" 2)
+check "WAIT_SCAN publishes a completed generation" "$f2" 'async_scan_state: complete'
+check "completed scans report processed entries and bytes" "$f2" 'scan_progress_bytes: 32'
+
+output=$(printf 'SCAN_START\nCANCEL_SCAN\nWAIT_SCAN\nq\n' | "$BINARY" --headless "$async_root")
+check "CANCEL_SCAN requests worker cancellation" "$(extract_frame "$output" 2)" 'async_scan_state: cancelling'
+f3=$(extract_frame "$output" 3)
+check "WAIT_SCAN joins the cancelled worker" "$f3" 'async_scan_state: cancelled'
+check "cancelled scan keeps the previous snapshot" "$f3" 'total_entries: 2'
+
+output=$(printf 'SCAN_START\nCD %s\nWAIT_SCAN\nq\n' "$async_child" | "$BINARY" --headless "$async_root")
+check "root changes replace the active generation" "$(extract_frame "$output" 2)" "async_scan_root: $async_child"
+f3=$(extract_frame "$output" 3)
+check "only the newest root is published" "$f3" "current_path: $async_child"
+check "replacement scan lists the new root" "$f3" 'nested.txt'
+
+echo ""
 # ============================================================
 cleanup
 

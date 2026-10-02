@@ -1,5 +1,3 @@
-#include <thread>
-#include <chrono>
 #include <string>
 #include <cstring>
 #include <vector>
@@ -11,16 +9,26 @@
 #include <cwctype>
 #include <cstdint>
 #include <climits>
+#include <algorithm>
 
 void draw_terminal_border() {
     // Empty: header and footer now draw their own borders.
 }
-
 static void draw_horizontal_line(int row, int col_start, int col_end, chtype left, chtype mid, chtype right) {
     mvaddch(row, col_start, left);
     for (int c = col_start + 1; c < col_end; ++c)
         mvaddch(row, c, mid);
     mvaddch(row, col_end, right);
+}
+
+static std::string utf8_prefix(const std::string& value, size_t max_bytes) {
+    if (value.size() <= max_bytes) return value;
+    size_t prefix = max_bytes > 3 ? max_bytes - 3 : max_bytes;
+    while (prefix > 0 && prefix < value.size() &&
+           (static_cast<unsigned char>(value[prefix]) & 0xc0) == 0x80) --prefix;
+    std::string clipped = value.substr(0, prefix);
+    if (max_bytes > 3 && prefix + 3 <= max_bytes) clipped += "...";
+    return clipped;
 }
 
 void draw_header(int cols, const std::filesystem::path& current_path, int page, int total_pages) {
@@ -71,7 +79,7 @@ struct FooterSection {
 static const FooterSection sections[] = {
     {Text::Navigation, {Text::MoveBinding, Text::PageBinding, Text::EnterDirectoryBinding, Text::ParentDirectoryBinding}},
     {Text::Actions, {Text::ExpandBinding, Text::OpenBinding, Text::DeleteBinding, Text::ChangeRootBinding}},
-    {Text::System, {Text::ColorBinding, Text::WarningsBinding, Text::RefreshBinding, Text::QuitBinding}},
+    {Text::System, {Text::ColorBinding, Text::CancelScanBinding, Text::WarningsBinding, Text::RefreshBinding, Text::QuitBinding}},
 };
 
 // Build a flat string of bindings for a section
@@ -111,6 +119,14 @@ static int count_content_lines(int cols) {
 
 int footer_height(int cols) {
     return count_content_lines(cols) + 2; // content + separator + bottom
+}
+
+void draw_scan_status(int row, int cols, const std::string& status) {
+    if (row < 0 || cols < 4) return;
+    move(row, 0);
+    clrtoeol();
+    const std::string clipped = utf8_prefix(status, static_cast<size_t>(cols - 2));
+    if (!clipped.empty()) mvaddnstr(row, 1, clipped.c_str(), static_cast<int>(clipped.size()));
 }
 
 void draw_footer(int rows, int cols, int selected, int total_entries, double last_scan_ms,
@@ -629,50 +645,4 @@ std::string format_scan_time(double ms) {
             return std::string(buf);
         }
     }
-}
-
-void show_loading_animation(std::atomic<bool>& loading, std::atomic<bool>& started) {
-    const char* frames[] = {
-        "ooxooxoxx",
-        "oxxooxoox",
-        "xxxooxooo",
-        "xxxxooooo",
-        "xxoxooxoo",
-        "xooxooxxo",
-        "oooxooxxx",
-        "oooooxxxx"
-    };
-    int num_frames = sizeof(frames) / sizeof(frames[0]);
-    int frame = 0;
-    int rows, cols;
-    getmaxyx(stdscr, rows, cols);
-    int win_height = 7, win_width = 13;
-    int starty = (rows - win_height) / 2;
-    int startx = (cols - win_width) / 2;
-    int delay = 120;
-    int waited = 0;
-    while (loading && waited < 500) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(delay));
-        waited += delay;
-    }
-    if (!loading) return;
-    started = true;
-    WINDOW* win = newwin(win_height, win_width, starty, startx);
-    box(win, 0, 0);
-    mvwprintw(win, 1, 3, "%s", text(Text::Loading));
-    wrefresh(win);
-    while (loading) {
-        for (int y = 0; y < 3; ++y) {
-            for (int x = 0; x < 3; ++x) {
-                char c = frames[frame][y*3 + x];
-                chtype ch = (c == 'x') ? ACS_DIAMOND : ' ';
-                mvwaddch(win, 3 + y, 4 + x * 2, ch);
-                mvwaddch(win, 3 + y, 4 + x * 2 + 1, ' ');
-            }
-        }
-        wrefresh(win);
-        std::this_thread::sleep_for(std::chrono::milliseconds(delay));
-        frame = (frame + 1) % num_frames;
-    }
-    delwin(win);
 }

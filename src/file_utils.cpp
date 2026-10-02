@@ -8,6 +8,7 @@
 #include <map>
 #include <unordered_map>
 #include <mutex>
+#include <optional>
 #include <stdexcept>
 
 namespace fs = std::filesystem;
@@ -43,6 +44,19 @@ static std::error_code injected_error(const ScanOptions& options, const fs::path
     return options.error_injector ? options.error_injector(path, operation) : std::error_code{};
 }
 
+static bool check_cancelled(const ScanOptions& options, ScanResult& result) {
+    if (result.status == ScanStatus::cancelled) return true;
+    if (!options.is_cancelled || !options.is_cancelled()) return false;
+    result.status = ScanStatus::cancelled;
+    return true;
+}
+
+static void report_progress(const ScanOptions& options, ScanResult& result,
+                            const fs::path& path) {
+    result.progress.current_path = path;
+    if (options.progress_callback) options.progress_callback(result.progress);
+}
+
 static void record_issue(ScanResult& result, const fs::path& path,
                          const std::string& operation, const std::error_code& error) {
     if (!error) return;
@@ -57,15 +71,28 @@ static void record_issue(ScanResult& result, const fs::path& path,
 
 static DirectorySize measure_directory(const fs::path& dir_path, const ScanOptions& options,
                                        ScanResult& result) {
+    DirectorySize measured;
+    if (check_cancelled(options, result)) return measured;
     const fs::path normalized = dir_path.lexically_normal();
     const bool injectable = static_cast<bool>(options.error_injector);
     if (!injectable) {
-        std::lock_guard<std::mutex> lock(cache_mutex);
-        auto cached = dir_size_cache.find(normalized);
-        if (cached != dir_size_cache.end()) return cached->second;
+        std::optional<DirectorySize> cached_size;
+        {
+            std::lock_guard<std::mutex> lock(cache_mutex);
+            const auto cached = dir_size_cache.find(normalized);
+            if (cached != dir_size_cache.end()) cached_size = cached->second;
+        }
+        if (cached_size) {
+            result.progress.bytes_processed += cached_size->bytes;
+            report_progress(options, result, normalized);
+            if (check_cancelled(options, result)) return {};
+            return *cached_size;
+        }
     }
 
-    DirectorySize measured;
+    ++result.progress.directories_processed;
+    report_progress(options, result, normalized);
+    if (check_cancelled(options, result)) return measured;
     std::error_code error = injected_error(options, normalized, "directory_open");
     fs::recursive_directory_iterator iterator;
     if (!error) iterator = fs::recursive_directory_iterator(normalized, fs::directory_options::none, error);
@@ -74,10 +101,19 @@ static DirectorySize measure_directory(const fs::path& dir_path, const ScanOptio
         measured.status = SizeStatus::unavailable;
         return measured;
     }
+    if (check_cancelled(options, result)) {
+        measured.status = SizeStatus::partial;
+        return measured;
+    }
 
     const fs::recursive_directory_iterator end;
     while (iterator != end) {
+        if (check_cancelled(options, result)) {
+            measured.status = SizeStatus::partial;
+            return measured;
+        }
         const fs::path child = iterator->path();
+        ++result.progress.entries_processed;
         error = injected_error(options, child, "entry_status");
         fs::file_status status;
         if (!error) status = iterator->symlink_status(error);
@@ -103,7 +139,15 @@ static DirectorySize measure_directory(const fs::path& dir_path, const ScanOptio
                 measured.status = SizeStatus::partial;
             } else {
                 measured.bytes += bytes;
+                result.progress.bytes_processed += bytes;
             }
+        } else if (fs::is_directory(status)) {
+            ++result.progress.directories_processed;
+        }
+        report_progress(options, result, child);
+        if (check_cancelled(options, result)) {
+            measured.status = SizeStatus::partial;
+            return measured;
         }
 
         error.clear();
@@ -115,7 +159,14 @@ static DirectorySize measure_directory(const fs::path& dir_path, const ScanOptio
         }
     }
 
-    if (measured.status == SizeStatus::complete && !injectable) {
+    if (check_cancelled(options, result)) {
+        measured.status = SizeStatus::partial;
+        return measured;
+    }
+
+    if (measured.status == SizeStatus::complete && !injectable && options.defer_cache_updates) {
+        result.pending_cache_updates.push_back({normalized, measured.bytes, measured.status});
+    } else if (measured.status == SizeStatus::complete && !injectable) {
         std::lock_guard<std::mutex> lock(cache_mutex);
         dir_size_cache[normalized] = measured;
     }
@@ -127,6 +178,10 @@ static void append_directory(const fs::path& path,
                              int depth, int max_files, const ScanOptions& options,
                              ScanResult& result) {
     if (max_files <= 0) throw std::invalid_argument("Page size must be positive.");
+    if (check_cancelled(options, result)) return;
+    ++result.progress.directories_processed;
+    report_progress(options, result, path);
+    if (check_cancelled(options, result)) return;
 
     std::vector<EntryInfo> all_entries;
     std::error_code error = injected_error(options, path, "directory_open");
@@ -140,7 +195,9 @@ static void append_directory(const fs::path& path,
 
     const fs::directory_iterator end;
     while (iterator != end) {
+        if (check_cancelled(options, result)) return;
         const fs::path child = iterator->path();
+        ++result.progress.entries_processed;
         error = injected_error(options, child, "entry_status");
         fs::file_status status;
         if (!error) status = iterator->symlink_status(error);
@@ -173,8 +230,11 @@ static void append_directory(const fs::path& path,
             } else {
                 all_entries.push_back({"[FILE]", child.filename().u8string(), child, bytes,
                                        depth, false, SizeStatus::complete});
+                result.progress.bytes_processed += bytes;
             }
         }
+        report_progress(options, result, child);
+        if (check_cancelled(options, result)) return;
 
         error.clear();
         iterator.increment(error);
@@ -184,6 +244,7 @@ static void append_directory(const fs::path& path,
         }
     }
 
+    if (check_cancelled(options, result)) return;
     std::sort(all_entries.begin(), all_entries.end(), [](const EntryInfo& a, const EntryInfo& b) {
         if (a.size != b.size) return a.size > b.size;
         return a.name < b.name;
@@ -194,11 +255,21 @@ static void append_directory(const fs::path& path,
                        + (all_entries.size() % page_capacity != 0);
     if (total_pages == 0) total_pages = 1;
 
-    int page = options.reset_pagination ? 0 : resto_state.resto_page[path];
+    int page = 0;
+    if (!options.reset_pagination) {
+        if (options.isolated_pagination) {
+            const auto stored = result.pagination_pages.find(path);
+            if (stored != result.pagination_pages.end()) page = stored->second;
+        } else {
+            page = resto_state.resto_page[path];
+        }
+    }
     if (page < 0 || static_cast<size_t>(page) >= total_pages) {
         page = 0;
-        if (!options.reset_pagination) resto_state.resto_page[path] = 0;
+        if (!options.reset_pagination && !options.isolated_pagination)
+            resto_state.resto_page[path] = 0;
     }
+    if (options.isolated_pagination) result.pagination_pages[path] = page;
 
     const size_t start_idx = static_cast<size_t>(page) * page_capacity;
     const size_t end_idx = start_idx + std::min(page_capacity, all_entries.size() - start_idx);
@@ -210,10 +281,13 @@ static void append_directory(const fs::path& path,
     }
 
     for (size_t index = start_idx; index < end_idx; ++index) {
+        if (check_cancelled(options, result)) return;
         result.entries.push_back(all_entries[index]);
-        if (all_entries[index].type == "[DIR] " && all_entries[index].expanded)
+        if (all_entries[index].type == "[DIR] " && all_entries[index].expanded) {
             append_directory(all_entries[index].full_path, expanded_dirs, depth + 1,
                              max_files, options, result);
+            if (result.status == ScanStatus::cancelled) return;
+        }
     }
 
     if (static_cast<size_t>(page) + 1 < total_pages) {
@@ -228,10 +302,13 @@ ScanResult scan_tree_entries(const fs::path& requested_path,
                              int max_files, const ScanOptions& options) {
     if (max_files <= 0) throw std::invalid_argument("Page size must be positive.");
     ScanResult result;
+    if (options.isolated_pagination) result.pagination_pages = options.pagination_pages;
+    if (check_cancelled(options, result)) return result;
     fs::path root = requested_path;
     std::error_code error = injected_error(options, root, "root_status");
     fs::file_status root_status;
     if (!error) root_status = fs::symlink_status(root, error);
+    if (check_cancelled(options, result)) return result;
     if (error) {
         record_issue(result, root, "root_status", error);
         result.status = ScanStatus::failed;
@@ -239,6 +316,7 @@ ScanResult scan_tree_entries(const fs::path& requested_path,
     }
     if (fs::is_symlink(root_status) || is_directory_link(root)) {
         root = fs::canonical(root, error);
+        if (check_cancelled(options, result)) return result;
         if (error) {
             record_issue(result, requested_path, "resolve_root_link", error);
             result.status = ScanStatus::failed;
@@ -246,6 +324,7 @@ ScanResult scan_tree_entries(const fs::path& requested_path,
         }
     }
     const bool root_is_directory = fs::is_directory(root, error);
+    if (check_cancelled(options, result)) return result;
     if (error || !root_is_directory) {
         record_issue(result, root, "directory_open", error ? error :
                      std::make_error_code(std::errc::not_a_directory));
@@ -256,11 +335,15 @@ ScanResult scan_tree_entries(const fs::path& requested_path,
     try {
         append_directory(root, expanded_dirs, 0, max_files, options, result);
     } catch (const fs::filesystem_error& ex) {
-        record_issue(result, ex.path1().empty() ? root : ex.path1(), "scan", ex.code());
-        if (result.entries.empty()) result.status = ScanStatus::failed;
+        if (result.status != ScanStatus::cancelled) {
+            record_issue(result, ex.path1().empty() ? root : ex.path1(), "scan", ex.code());
+            if (result.entries.empty()) result.status = ScanStatus::failed;
+        }
     } catch (...) {
-        record_issue(result, root, "scan", std::make_error_code(std::errc::io_error));
-        if (result.entries.empty()) result.status = ScanStatus::failed;
+        if (result.status != ScanStatus::cancelled) {
+            record_issue(result, root, "scan", std::make_error_code(std::errc::io_error));
+            if (result.entries.empty()) result.status = ScanStatus::failed;
+        }
     }
     return result;
 }
@@ -331,4 +414,21 @@ std::set<fs::path>& get_expanded_dirs() {
 void clear_dir_size_cache() {
     std::lock_guard<std::mutex> lock(cache_mutex);
     dir_size_cache.clear();
+}
+
+void commit_scan_cache(const ScanResult& result) {
+    if (result.status == ScanStatus::cancelled || result.status == ScanStatus::failed) return;
+    std::lock_guard<std::mutex> lock(cache_mutex);
+    for (const auto& item : result.pending_cache_updates) {
+        if (item.status == SizeStatus::complete)
+            dir_size_cache[item.path.lexically_normal()] = {item.bytes, item.status};
+    }
+}
+
+std::map<fs::path, int> snapshot_resto_state() {
+    return resto_state.resto_page;
+}
+
+void restore_resto_state(const std::map<fs::path, int>& pages) {
+    resto_state.resto_page = pages;
 }

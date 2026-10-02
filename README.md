@@ -163,11 +163,21 @@ are included in directory totals.
 | `E` | Toggle directory expansion or activate a pagination row |
 | `N` / `P` | Next / previous page of the selected directory |
 | `R` | Re-scan the current root and update cached sizes |
+| Escape | Cancel the active scan and keep the last completed listing |
 | Space | Open with the system's default application |
 | Delete | Delete the selected file or directory after confirmation |
 | `B` | Choose the bar's background and text colors |
 | `W` | Review filesystem errors and omitted entries from the last scan |
 | `Q` | Quit |
+
+Scans run in a managed background worker. While one is active, TreeFiles shows
+the scan root, directories and entries processed, bytes counted and elapsed
+time. It keeps the previous completed listing available for selection and
+scrolling; Delete is disabled until the replacement completes. Press Escape to
+cancel. Pressing `R` or changing roots replaces the pending scan with the
+latest request. Cancellation is cooperative between filesystem operations, so
+a filesystem call already blocked by the operating system must return first.
+All terminal drawing and key handling stay on the main thread.
 
 TreeFiles lists symbolic links and Windows directory junctions without following
 them. A link can be opened with Space or deleted without deleting its target.
@@ -187,7 +197,7 @@ English is the default. Select Spanish for a session with:
 ~~~
 
 `--lang=es` also works. The language covers the footer, page labels, prompts,
-color picker, loading indicator and command-line help. Headless protocol keys
+color picker, scan status and command-line help. Headless protocol keys
 such as `selected_index` remain stable; the `language` field identifies the
 selected language. Unsupported language codes exit with code 2.
 
@@ -227,7 +237,11 @@ Pipe one event per line. Arrow events use `UP`, `DOWN`, `LEFT` and `RIGHT`;
 `CD <path>` changes to a path relative to the current root or to an absolute
 path; the entire remainder of the line is treated as the literal path. Letter shortcuts work as
 in the interactive interface. `COLOR foreground background` applies and saves
-colors; `B` only logs the available choices in headless mode.
+colors; `B` only logs the available choices in headless mode. Headless scans
+remain synchronous by default. `SCAN_START` starts an asynchronous scan,
+`CANCEL_SCAN` requests cancellation, and `WAIT_SCAN` waits for the active and
+replacement scans to finish. While a scan runs, frames retain the last completed
+listing and report the target and progress counters.
 
 ~~~powershell
 'COLOR white blue', 'j', 'l', 'q' |
@@ -236,7 +250,10 @@ colors; `B` only logs the available choices in headless mode.
 
 Frames contain the current path, language, page size, pagination, selection,
 scrolling, expansion, colors, entry list, `scan_status`, and structured
-`diagnostics_count`/`diagnostic_N` records. Headless opening logs an action;
+`diagnostics_count`/`diagnostic_N` records. They also include
+`async_scan_state`, `async_scan_root`, `scan_progress_entries`,
+`scan_progress_directories`, `scan_progress_bytes`, and
+`scan_progress_elapsed_seconds`. Headless opening logs an action;
 confirmed deletion still removes files. Exit codes are 0 on success, 1 when the
 root cannot be listed, and 2 for invalid command-line options. Errors isolated
 to a child keep accessible results and mark the scan partial.
