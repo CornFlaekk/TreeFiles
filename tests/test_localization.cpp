@@ -34,5 +34,6 @@ int main() {
     build_tree_entries(fixture.path, {}, entries, 0, 2);
     check(entries.back().name.find("Next (1/2)") != std::string::npos, "English page navigation");
     check(std::string(text(Text::Usage)).find("--lang en|es") != std::string::npos, "help documents language option");
+    check(std::string(text(Text::Usage)).find("--save-settings") != std::string::npos, "help documents explicit settings persistence");
     return failed ? 1 : 0;
 }

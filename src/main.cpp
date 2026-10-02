@@ -368,7 +368,12 @@ int main(int argc, char* argv[]) {
     bool headless = false;
     bool show_usage = false;
     bool show_version = false;
-    int page_size = 30;
+    bool save_preferences_requested = false;
+    const auto config_path = configuration_file();
+    std::string config_error;
+    Preferences preferences = load_preferences(config_path, config_error);
+    set_language(preferences.language);
+    int page_size = preferences.page_size;
     SortOptions sort_options;
     std::filesystem::path start_path = ".";
 
@@ -381,6 +386,8 @@ int main(int argc, char* argv[]) {
             show_usage = true;
         } else if (arg == "--version") {
             show_version = true;
+        } else if (arg == "--save-settings") {
+            save_preferences_requested = true;
         } else if (arg == "--lang" || arg.rfind("--lang=", 0) == 0) {
             std::string value;
             if (arg == "--lang") {
@@ -392,6 +399,7 @@ int main(int argc, char* argv[]) {
                 std::cerr << text(Text::LanguageError) << "\n";
                 return 2;
             }
+            preferences.language = value;
         } else if (arg == "--page-size" || arg.rfind("--page-size=", 0) == 0) {
             std::string value;
             if (arg == "--page-size") {
@@ -406,6 +414,7 @@ int main(int argc, char* argv[]) {
                 return 2;
             }
             page_size = parsed;
+            preferences.page_size = parsed;
         } else if (arg == "--sort" || arg.rfind("--sort=", 0) == 0) {
             std::string value;
             if (arg == "--sort") {
@@ -460,10 +469,14 @@ int main(int argc, char* argv[]) {
         }
     }
 
-    const auto config_path = configuration_file();
-    std::string config_error;
-    auto colors = load_color_settings(config_path, config_error);
+    preferences.language = language_code();
+    preferences.page_size = page_size;
     if (!config_error.empty()) std::cerr << text(Text::ConfigLoadWarning) << config_error << "\n";
+    if (save_preferences_requested && !save_preferences(config_path, preferences, config_error)) {
+        std::cerr << text(Text::ConfigSaveWarning) << config_error << "\n";
+        return 1;
+    }
+    auto colors = preferences;
 
     // ==================== HEADLESS MODE ====================
     if (headless) {
