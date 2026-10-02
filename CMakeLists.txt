@@ -36,7 +36,7 @@ else()
     target_link_libraries(treefiles_curses INTERFACE ${CURSES_LIBRARIES})
 endif()
 
-add_library(treefiles_core STATIC src/file_utils.cpp src/localization.cpp src/settings.cpp src/platform_utils.cpp)
+add_library(treefiles_core STATIC src/file_utils.cpp src/export_utils.cpp src/localization.cpp src/settings.cpp src/platform_utils.cpp)
 target_include_directories(treefiles_core PUBLIC include)
 target_link_libraries(treefiles_core PUBLIC Threads::Threads)
 
@@ -62,7 +62,7 @@ treefiles_warnings(treefiles)
 
 include(CTest)
 if(BUILD_TESTING)
-    foreach(component human_readable_size build_tree pagination settings localization scan)
+    foreach(component human_readable_size build_tree pagination settings localization scan export_utils)
         add_executable(test_${component} tests/test_${component}.cpp)
         target_link_libraries(test_${component} PRIVATE treefiles_core)
         treefiles_warnings(test_${component})

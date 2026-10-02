@@ -61,6 +61,7 @@ struct ScanOptions {
     LastWriteTimeReader last_write_time_reader;
     std::function<std::error_code(const std::filesystem::path&, const std::string&)> error_injector;
     bool reset_pagination = false;
+    bool paginate = true;
     SortOptions sort;
     FilterOptions filter;
 };

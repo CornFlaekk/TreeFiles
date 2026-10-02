@@ -336,24 +336,30 @@ static void append_directory(const fs::path& path,
             }));
     }
 
-    const size_t page_capacity = static_cast<size_t>(max_files);
-    size_t total_pages = all_entries.size() / page_capacity
-                       + (all_entries.size() % page_capacity != 0);
-    if (total_pages == 0) total_pages = 1;
+    size_t start_idx = 0;
+    size_t end_idx = all_entries.size();
+    size_t total_pages = 1;
+    int page = 0;
+    if (options.paginate) {
+        const size_t page_capacity = static_cast<size_t>(max_files);
+        total_pages = all_entries.size() / page_capacity
+                    + (all_entries.size() % page_capacity != 0);
+        if (total_pages == 0) total_pages = 1;
 
-    int page = options.reset_pagination ? 0 : resto_state.resto_page[path];
-    if (page < 0 || static_cast<size_t>(page) >= total_pages) {
-        page = 0;
-        if (!options.reset_pagination) resto_state.resto_page[path] = 0;
-    }
+        page = options.reset_pagination ? 0 : resto_state.resto_page[path];
+        if (page < 0 || static_cast<size_t>(page) >= total_pages) {
+            page = 0;
+            if (!options.reset_pagination) resto_state.resto_page[path] = 0;
+        }
 
-    const size_t start_idx = static_cast<size_t>(page) * page_capacity;
-    const size_t end_idx = start_idx + std::min(page_capacity, all_entries.size() - start_idx);
+        start_idx = static_cast<size_t>(page) * page_capacity;
+        end_idx = start_idx + std::min(page_capacity, all_entries.size() - start_idx);
 
-    if (total_pages > 1 && page > 0) {
-        std::string label = std::string("\u25c2\u25c2 ") + text(Text::Previous) + " (" +
-                            std::to_string(page + 1) + "/" + std::to_string(total_pages) + ")";
-        result.entries.push_back({"[RESTO_PREV]", label, path, 0, depth, false});
+        if (total_pages > 1 && page > 0) {
+            std::string label = std::string("\u25c2\u25c2 ") + text(Text::Previous) + " (" +
+                                std::to_string(page + 1) + "/" + std::to_string(total_pages) + ")";
+            result.entries.push_back({"[RESTO_PREV]", label, path, 0, depth, false});
+        }
     }
 
     for (size_t index = start_idx; index < end_idx; ++index) {
@@ -363,7 +369,7 @@ static void append_directory(const fs::path& path,
                              max_files, options, result);
     }
 
-    if (static_cast<size_t>(page) + 1 < total_pages) {
+    if (options.paginate && static_cast<size_t>(page) + 1 < total_pages) {
         std::string label = std::string("\u25b8\u25b8 ") + text(Text::Next) + " (" +
                             std::to_string(page + 1) + "/" + std::to_string(total_pages) + ")";
         result.entries.push_back({"[RESTO_NEXT]", label, path, 0, depth, false});

@@ -100,6 +100,8 @@ The Makefile is for Linux; use CMake or the PowerShell scripts on Windows.
 
 ~~~text
 treefiles [--headless] [--page-size N] [--lang en|es] [--sort size|name|mtime] [--order asc|desc] [--filter TEXT] [--ext EXT] [directory]
+treefiles --export json [--output FILE] [options] directory
+treefiles --export csv --output FILE [options] directory
 ~~~
 
 | Option | Behavior |
@@ -111,6 +113,9 @@ treefiles [--headless] [--page-size N] [--lang en|es] [--sort size|name|mtime] [
 | `--order DIR` | Sort `asc` or `desc`; default `desc` |
 | `--filter TEXT` | Keep files and links whose filename contains `TEXT` |
 | `--ext EXT` | Keep files and links with this final extension, with or without a leading dot |
+| `--export json` | Export all direct children as a versioned JSON report; defaults to stdout |
+| `--export csv --output FILE` | Export all direct children as UTF-8 CSV, replacing the output atomically |
+| `--output FILE` | Optional JSON destination; with CSV, the output file is required |
 | `--headless` | Read events from stdin and print structured frames |
 | `--help`, `-h` | Show command-line help |
 | `--version` | Show the application version |
@@ -166,6 +171,43 @@ The extension is the final extension only, and may be written as `txt` or
 directories remain visible as context. Filtering happens before pagination,
 does not expand folders automatically, and does not change directory size
 totals.
+
+### Exporting reports
+
+Export mode does not start curses, read settings or save preferences. It reports
+every direct child of the root, regardless of `--page-size`; directory entries
+include their aggregate logical byte size, but their children are not rows.
+Sorting and filters use the same rules as the interactive and headless views.
+JSON always uses stable English schema keys and canonical `file`, `directory`
+and `link` type names, regardless of `--lang`.
+
+~~~powershell
+.\build\windows-debug\treefiles.exe --export json --sort name --order asc "$env:USERPROFILE\Documents"
+.\build\windows-debug\treefiles.exe --export csv --output .\report.csv --ext txt .
+$report = Get-Content .\report.json -Raw -Encoding UTF8 | ConvertFrom-Json
+~~~
+
+~~~bash
+./build/linux-debug/treefiles --export=json --filter report --ext=.txt "$HOME/Documents" > report.json
+./build/linux-debug/treefiles --export csv --output report.csv .
+~~~
+
+The JSON v1 object contains `schema_version`, absolute UTF-8 `root`, `complete`,
+the selected `sort` and `filter`, an `entries` array and `diagnostics`. Each row
+has a slash-separated path relative to the root, canonical type, byte-accurate
+`size_bytes` (null when unavailable), depth and `size_status`. CSV has the fixed
+header `root,path,type,size_bytes,depth,size_status,scan_complete`; an unknown
+size is an empty field. CSV diagnostics go to stderr; JSON includes them in the
+report and also writes readable diagnostics to stderr. Output files are written
+to a temporary sibling and replace the destination only after the full report
+is written successfully.
+
+Exit status is 0 for a complete report, 1 when the root cannot be scanned or
+the output cannot be opened/written, 2 for invalid CLI combinations or values,
+and 3 when a valid partial report was produced. A partial report retains readable rows and marks
+`complete`/`scan_complete` false. A missing root produces a diagnostic JSON
+object on stdout when JSON targets stdout; a failed scan never replaces an
+existing output file.
 
 Displayed sizes are logical file lengths in bytes, including sparse files; they
 do not estimate how many storage blocks a file occupies. Files larger than 1 TiB

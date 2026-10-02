@@ -575,6 +575,122 @@ output=$(printf 'FILTER\nEXT\nq\n' | "$BINARY" --headless "$filter_root")
 check "bare headless filter events report an error" "$output" 'Invalid filter event'
 
 echo ""
+echo "=== Scenario 22: JSON and CSV export ==="
+export_root="$TEST_DIR/export root, raíz"
+export_context="$export_root/context"
+mkdir -p "$export_context"
+printf '123456789012' > "$export_root/alpha, ñ.txt"
+printf '12345678901234567890' > "$export_root/beta.txt"
+printf '12345' > "$export_context/deep.txt"
+weird_name=$'comma,"quoted"\nline\\part.txt'
+printf 'special' > "$export_root/$weird_name"
+config_before=$(sha256sum "$TREEFILES_CONFIG" | cut -d' ' -f1)
+json_export=$("$BINARY" --export=json --page-size=1 --sort=name --order=asc "$export_root" 2>"$TEST_DIR/export.stderr")
+if [ -s "$TEST_DIR/export.stderr" ]; then
+    echo "  FAIL: JSON stdout is not mixed with diagnostics"
+    FAIL=$((FAIL + 1))
+else
+    echo "  PASS: JSON stdout is not mixed with diagnostics"
+    PASS=$((PASS + 1))
+fi
+if printf '%s' "$json_export" | python3 -c 'import json,sys; d=json.load(sys.stdin); assert d["schema_version"] == 1 and d["complete"]; assert len(d["entries"]) == 4; assert d["entries"][0]["path"] == "alpha, ñ.txt"; assert all(e["depth"] == 0 for e in d["entries"]); assert next(e for e in d["entries"] if e["type"] == "directory")["size_bytes"] == 5; assert any(e["path"] == "comma,\"quoted\"\nline\\part.txt" for e in d["entries"])'; then
+    echo "  PASS: JSON parser verifies schema, Unicode/control escaping, direct children, aggregate size, and no page truncation"
+    PASS=$((PASS + 1))
+else
+    echo "  FAIL: JSON report did not satisfy the schema"
+    FAIL=$((FAIL + 1))
+fi
+filtered_export=$("$BINARY" --export json --page-size 1 --filter alpha --ext=.TXT --lang=es "$export_root")
+if printf '%s' "$filtered_export" | python3 -c 'import json,sys; d=json.load(sys.stdin); assert len(d["entries"]) == 2; assert d["entries"][0]["path"] == "alpha, ñ.txt"; assert d["entries"][1]["type"] == "directory"; assert d["sort"]["key"] == "size"; assert d["filter"]["extension"] == ".TXT"'; then
+    echo "  PASS: JSON export applies shared filters and keeps directory context"
+    PASS=$((PASS + 1))
+else
+    echo "  FAIL: JSON export filter semantics are incorrect"
+    FAIL=$((FAIL + 1))
+fi
+json_english=$("$BINARY" --export json --lang en "$export_root")
+json_spanish=$("$BINARY" --export json --lang es "$export_root")
+if python3 -c 'import json,sys; a=json.loads(sys.argv[1]); b=json.loads(sys.argv[2]); assert list(a.keys()) == list(b.keys()); assert [e["type"] for e in a["entries"]] == [e["type"] for e in b["entries"]]' "$json_english" "$json_spanish"; then
+    echo "  PASS: JSON schema and canonical types are language-independent"
+    PASS=$((PASS + 1))
+else
+    echo "  FAIL: JSON schema changed with the interface language"
+    FAIL=$((FAIL + 1))
+fi
+csv_path="$TEST_DIR/export report.csv"
+"$BINARY" --export=csv --output="$csv_path" --page-size=1 "$export_root" 2>"$TEST_DIR/csv.stderr"
+if [ ! -s "$TEST_DIR/csv.stderr" ] && python3 -c 'import csv,sys; rows=list(csv.DictReader(open(sys.argv[1],encoding="utf-8",newline=""))); assert len(rows)==4; assert rows[0]["path"]=="alpha, ñ.txt"; assert all(r["scan_complete"]=="true" and r["depth"]=="0" for r in rows); assert next(r for r in rows if r["type"]=="directory")["size_bytes"]=="5"; assert any(r["path"]=="comma,\"quoted\"\nline\\part.txt" for r in rows)' "$csv_path"; then
+    echo "  PASS: Python CSV reader verifies quoted commas, quotes, backslashes, newlines, Unicode, and all direct children"
+    PASS=$((PASS + 1))
+else
+    echo "  FAIL: CSV report did not satisfy the schema"
+    FAIL=$((FAIL + 1))
+fi
+config_after=$(sha256sum "$TREEFILES_CONFIG" | cut -d' ' -f1)
+check "export does not alter saved settings" "$config_after" "$config_before"
+
+for expected in 'yaml' 'missing-format' 'csv-no-output' 'output-without-export' 'headless' 'save-settings'; do
+    case "$expected" in
+        yaml) args=(--export yaml "$export_root") ;;
+        missing-format) args=(--export) ;;
+        csv-no-output) args=(--export csv "$export_root") ;;
+        output-without-export) args=(--output "$csv_path" "$export_root") ;;
+        headless) args=(--export json --headless "$export_root") ;;
+        save-settings) args=(--export json --save-settings "$export_root") ;;
+    esac
+    if "$BINARY" "${args[@]}" >/dev/null 2>"$TEST_DIR/invalid-export.stderr"; then status=0; else status=$?; fi
+    check "invalid export arguments return code 2: $expected" "$status" '^2$'
+done
+
+missing_root="$TEST_DIR/missing export root"
+if output=$("$BINARY" --export json "$missing_root" 2>"$TEST_DIR/missing-root.stderr"); then status=0; else status=$?; fi
+if [ "$status" -eq 1 ] && printf '%s' "$output" | python3 -c 'import json,sys; d=json.load(sys.stdin); assert not d["complete"] and len(d["diagnostics"]) > 0'; then
+    echo "  PASS: missing root returns valid diagnostic JSON and exit code 1"
+    PASS=$((PASS + 1))
+else
+    echo "  FAIL: missing root export response is incorrect"
+    FAIL=$((FAIL + 1))
+fi
+preserved="$TEST_DIR/preserved.csv"
+printf 'previous report' > "$preserved"
+if "$BINARY" --export csv --output "$preserved" "$missing_root" >/dev/null 2>"$TEST_DIR/missing-csv.stderr"; then status=0; else status=$?; fi
+check "scan failure preserves a prior CSV file" "$status" '^1$'
+check "preserved CSV content is unchanged" "$(cat "$preserved")" '^previous report$'
+
+blocked="$TEST_DIR/blocked-output.csv"
+mkdir -p "$blocked"
+printf preserve > "$blocked/keep.txt"
+if "$BINARY" --export csv --output "$blocked" "$export_root" >/dev/null 2>"$TEST_DIR/write-error.stderr"; then status=0; else status=$?; fi
+check "output replacement failure returns code 1" "$status" '^1$'
+check "failed replacement leaves existing destination contents intact" "$(cat "$blocked/keep.txt")" '^preserve$'
+if find "$TEST_DIR" -maxdepth 1 -name '.treefiles-tmp-*' -print -quit | grep -q .; then
+    echo "  FAIL: failed export left a temporary file"
+    FAIL=$((FAIL + 1))
+else
+    echo "  PASS: failed export cleans its temporary file"
+    PASS=$((PASS + 1))
+fi
+empty_root="$TEST_DIR/empty export root"
+mkdir -p "$empty_root"
+empty_json=$("$BINARY" --export json "$empty_root")
+if printf '%s' "$empty_json" | python3 -c 'import json,sys; d=json.load(sys.stdin); assert d["complete"] and d["entries"]==[]'; then
+    echo "  PASS: empty root exports a valid empty JSON report"
+    PASS=$((PASS + 1))
+else
+    echo "  FAIL: empty root JSON report is incorrect"
+    FAIL=$((FAIL + 1))
+fi
+empty_csv="$TEST_DIR/empty.csv"
+"$BINARY" --export csv --output "$empty_csv" "$empty_root"
+if python3 -c 'import csv,sys; f=open(sys.argv[1],encoding="utf-8",newline=""); reader=csv.DictReader(f); assert reader.fieldnames==["root","path","type","size_bytes","depth","size_status","scan_complete"]; assert list(reader)==[]' "$empty_csv"; then
+    echo "  PASS: empty CSV keeps its schema header with no data rows"
+    PASS=$((PASS + 1))
+else
+    echo "  FAIL: empty CSV report is incorrect"
+    FAIL=$((FAIL + 1))
+fi
+
+echo ""
 # ============================================================
 cleanup
 

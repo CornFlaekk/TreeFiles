@@ -6,6 +6,7 @@
 #include "localization.h"
 #include "settings.h"
 #include "version.h"
+#include "export_utils.h"
 #include <filesystem>
 #include <vector>
 #include <string>
@@ -18,6 +19,7 @@
 #include <chrono>
 #include <thread>
 #include <atomic>
+#include <optional>
 #include <charconv>
 #include <array>
 #include <algorithm>
@@ -376,6 +378,68 @@ static bool navigate_to_parent(std::filesystem::path& current_path,
         absolute_path, error_message, sort, filter);
 }
 
+static void print_export_diagnostics(const std::vector<ScanIssue>& diagnostics) {
+    for (const auto& issue : diagnostics) {
+        std::cerr << issue.path.u8string() << ": " << issue.operation << ": "
+                  << issue.error.message() << " (error " << issue.error.value() << ")\n";
+    }
+}
+
+static int run_export(const std::filesystem::path& requested_root, const std::string& format,
+                      const std::optional<std::filesystem::path>& output_path,
+                      int page_size, const SortOptions& sort, const FilterOptions& filter) {
+    namespace fs = std::filesystem;
+    ExportDocument document;
+    document.sort = sort;
+    document.filter = filter;
+    ScanStatus scan_status = ScanStatus::failed;
+
+    std::error_code error;
+    const fs::path root = fs::canonical(requested_root, error);
+    if (error) {
+        std::error_code absolute_error;
+        document.root = fs::absolute(requested_root, absolute_error).lexically_normal();
+        if (absolute_error) document.root = requested_root;
+        document.complete = false;
+        document.diagnostics.push_back({document.root, "root", error});
+    } else {
+        document.root = root;
+        ScanOptions options;
+        options.paginate = false;
+        options.sort = sort;
+        options.filter = filter;
+        const auto result = scan_tree_entries(root, {}, page_size, options);
+        scan_status = result.status;
+        document.complete = result.status == ScanStatus::complete;
+        document.entries = result.entries;
+        document.diagnostics = result.diagnostics;
+    }
+
+    print_export_diagnostics(document.diagnostics);
+    if (scan_status == ScanStatus::failed) {
+        if (format == "json" && !output_path) std::cout << serialize_export_json(document);
+        return 1;
+    }
+
+    const std::string contents = format == "json"
+        ? serialize_export_json(document) : serialize_export_csv(document);
+    if (output_path) {
+        std::string write_error;
+        if (!write_export_file_atomic(contents, *output_path, write_error)) {
+            std::cerr << text(Text::ExportWriteError) << write_error << "\n";
+            return 1;
+        }
+    } else {
+        std::cout.write(contents.data(), static_cast<std::streamsize>(contents.size()));
+        std::cout.flush();
+        if (!std::cout) {
+            std::cerr << text(Text::ExportWriteError) << "stdout\n";
+            return 1;
+        }
+    }
+    return export_exit_code(scan_status);
+}
+
 int main(int argc, char* argv[]) {
     ConsoleEncoding console_encoding;
     bool headless = false;
@@ -385,6 +449,11 @@ int main(int argc, char* argv[]) {
     SortOptions sort_options;
     FilterOptions active_filter;
     std::filesystem::path start_path = ".";
+    bool export_requested = false;
+    bool save_settings_requested = false;
+    std::string export_format;
+    std::optional<std::string> export_output_argument;
+    size_t positional_argument_count = 0;
 
     const auto arguments = command_line_arguments(argc, argv);
     for (size_t i = 0; i < arguments.size(); ++i) {
@@ -420,6 +489,47 @@ int main(int argc, char* argv[]) {
                 return 2;
             }
             page_size = parsed;
+        } else if (arg == "--export" || arg.rfind("--export=", 0) == 0) {
+            if (export_requested) {
+                std::cerr << text(Text::ExportOptionError) << "\n";
+                return 2;
+            }
+            std::string value;
+            if (arg == "--export") {
+                if (i + 1 >= arguments.size() || arguments[i + 1].rfind("--", 0) == 0) {
+                    std::cerr << text(Text::ExportFormatError) << "\n";
+                    return 2;
+                }
+                value = arguments[++i];
+            } else {
+                value = arg.substr(9);
+            }
+            if (value != "json" && value != "csv") {
+                std::cerr << text(Text::ExportFormatError) << "\n";
+                return 2;
+            }
+            export_requested = true;
+            export_format = value;
+        } else if (arg == "--output" || arg.rfind("--output=", 0) == 0) {
+            if (export_output_argument) {
+                std::cerr << text(Text::ExportOptionError) << "\n";
+                return 2;
+            }
+            std::string value;
+            if (arg == "--output") {
+                if (i + 1 >= arguments.size() || arguments[i + 1].rfind("--", 0) == 0) {
+                    std::cerr << text(Text::ExportOptionError) << "\n";
+                    return 2;
+                }
+                value = arguments[++i];
+            } else {
+                value = arg.substr(9);
+            }
+            if (value.empty()) {
+                std::cerr << text(Text::ExportOptionError) << "\n";
+                return 2;
+            }
+            export_output_argument = value;
         } else if (arg == "--sort" || arg.rfind("--sort=", 0) == 0) {
             std::string value;
             if (arg == "--sort") {
@@ -462,12 +572,37 @@ int main(int argc, char* argv[]) {
             } else {
                 active_filter.extension = arg.substr(6);
             }
+        } else if (arg == "--save-settings") {
+            save_settings_requested = true;
         } else if (!arg.empty() && arg[0] != '-') {
+            ++positional_argument_count;
             start_path = std::filesystem::u8path(arg);
         } else {
             std::cerr << text(Text::UnknownOption) << arg << ". " << text(Text::UsageHint) << "\n";
             return 2;
         }
+    }
+    if (export_output_argument && !export_requested) {
+        std::cerr << text(Text::ExportOptionError) << "\n";
+        return 2;
+    }
+    if (export_requested) {
+        if (headless || save_settings_requested) {
+            std::cerr << text(Text::ExportModeError) << "\n";
+            return 2;
+        }
+        if (positional_argument_count != 1) {
+            std::cerr << text(Text::ExportDirectoryError) << "\n";
+            return 2;
+        }
+        if (export_format == "csv" && !export_output_argument) {
+            std::cerr << text(Text::ExportOutputRequired) << "\n";
+            return 2;
+        }
+    } else if (save_settings_requested) {
+        std::cerr << text(Text::UnknownOption) << "--save-settings. "
+                  << text(Text::UsageHint) << "\n";
+        return 2;
     }
     if (show_usage) {
         std::cout << text(Text::Usage);
@@ -476,6 +611,14 @@ int main(int argc, char* argv[]) {
     if (show_version) {
         std::cout << "TreeFiles " << treefiles_version << "\n";
         return 0;
+    }
+
+    if (export_requested) {
+        const std::optional<std::filesystem::path> output_path = export_output_argument
+            ? std::optional<std::filesystem::path>(std::filesystem::u8path(*export_output_argument))
+            : std::nullopt;
+        return run_export(start_path, export_format, output_path, page_size,
+                          sort_options, active_filter);
     }
 
     std::error_code path_error;

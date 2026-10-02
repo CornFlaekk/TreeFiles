@@ -16,6 +16,8 @@ enum class Text {
     SortBinding, SortLabel, SortSize, SortName, SortMtime,
     FilterBinding, FilterLabel, FilterNamePrompt, FilterExtensionPrompt, FilterHint,
     FilterTextError, FilterExtensionError, InvalidFilterEvent,
+    ExportFormatError, ExportModeError, ExportDirectoryError, ExportOutputRequired,
+    ExportOptionError, ExportWriteError,
     Count
 };
 

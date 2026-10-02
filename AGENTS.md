@@ -19,6 +19,7 @@ TreeFiles/
 ├── .gitignore
 ├── include/
 │   ├── file_utils.h           # EntryInfo, sorting and file system functions
+│   ├── export_utils.h         # JSON/CSV report schema, serializers and atomic output
 │   ├── ui_utils.h             # TUI rendering functions
 │   ├── localization.h         # English/Spanish string catalog
 │   ├── settings.h             # Saved bar colors
@@ -27,6 +28,7 @@ TreeFiles/
 ├── src/
 │   ├── main.cpp               # Entry point: main loop, keyboard handling
 │   ├── file_utils.cpp         # Directory traversal, size calc, tree building
+│   ├── export_utils.cpp        # Export serialization and output replacement
 │   └── ui_utils.cpp           # TUI rendering: borders, bars, popups
 ├── tests/
 │   ├── test_human_readable_size.cpp
@@ -34,7 +36,8 @@ TreeFiles/
 │   ├── test_pagination.cpp
 │   ├── test_settings.cpp
 │   ├── test_localization.cpp
-│   └── test_scan.cpp
+│   ├── test_scan.cpp
+│   └── test_export_utils.cpp
 ├── scripts/
 │   ├── run_interactive.sh     # tmux-based interactive testing
 │   ├── test_scenarios.sh      # Headless integration test scenarios
@@ -223,6 +226,7 @@ struct EntryInfo {
 - **Scanning:** Use `ScanResult`/`ScanIssue`; never turn a filesystem error into a successful zero-byte size. Do not traverse symlinks or Windows directory junctions.
 - **Sorting:** Sort real siblings before pagination. Keep name/path tie-breaks bytewise and deterministic; missing modification times stay last for either direction.
 - **Filtering:** Apply filename substring and final-extension filters to files and links before pagination at every displayed directory level. Keep directories visible as context, do not auto-expand them, and leave measured size totals independent of filters. Fold ASCII case only; compare non-ASCII UTF-8 bytes exactly.
+- **Export:** Keep JSON keys, CSV columns, canonical entry types and size status values language-independent. Export all direct children without pagination; directories carry aggregate sizes but are not expanded. Escape UTF-8/control characters correctly and replace output atomically only after serialization succeeds.
 - **Thread safety:** `std::mutex` guards the directory size cache. `std::atomic<bool>` for loading flags.
 - **Dependencies:** C++17 standard library + the platform's curses backend. Keep platform-specific APIs in `platform_utils.cpp`.
 - **Localization:** All UI strings go through `localization.h`. English is the default; Spanish is selected with `--lang es`. Keep headless protocol keys and persisted color names stable.
@@ -233,6 +237,7 @@ struct EntryInfo {
 ## Testing Guidelines
 
 - Unit tests go in `tests/test_<component>.cpp`. Each is a standalone executable returning 0 on success, non-zero on failure.
+- Export tests use real JSON/CSV parsers in platform integration tests, with serializer unit tests for control characters, Unicode, exact large integers, partial results and failed atomic replacement.
 - Use standard `assert()` for simple checks, or custom `check()` macros for descriptive output.
 - Integration scenarios in `scripts/test_scenarios.sh` (Linux) and `scripts/test_scenarios.ps1` (Windows) use headless mode with piped events. CTest runs the appropriate suite. `TREEFILES_BINARY` lets the Bash suite use an already-built binary.
 - Visual verification via `scripts/run_interactive.sh` and `screenshots/`.

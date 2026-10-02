@@ -21,6 +21,8 @@ const std::array<const char*, text_count> english = {
     "  --filter TEXT  Match filename substrings (ASCII case-insensitive); combine with --ext.\n"
     "  --ext EXT      Match the final extension (ASCII case-insensitive), with or without a dot.\n"
     "                 / edits both filters; F clears both. Non-ASCII bytes match exactly.\n"
+    "  --export FORMAT DIR  Export direct children as JSON or CSV (CSV requires --output).\n"
+    "  --output FILE  Write export to a file atomically; JSON defaults to stdout.\n"
     "  --headless     Read events from stdin and print state frames.\n"
     "                 Enter navigates, Backspace returns to parent, O enters a path.\n"
     "                 Headless: ENTER, BACKSPACE, CD <path>, REFRESH, SORT <key> <order>, FILTER <text>, EXT <ext>, CLEAR_FILTER.\n"
@@ -38,7 +40,10 @@ const std::array<const char*, text_count> english = {
     "--order requires asc or desc.", "Invalid SORT event.",
     "[S] sort [T] order", "Sort", "size", "name", "mtime",
     "[/] filter [F] clear", "Filter", "Filename contains:", "Extension:", "Tab changes field; Enter applies; Esc cancels",
-    "--filter requires a value.", "--ext requires a value.", "Invalid filter event."
+    "--filter requires a value.", "--ext requires a value.", "Invalid filter event.",
+    "--export requires json or csv.", "--export cannot be combined with --headless or --save-settings.",
+    "--export requires exactly one directory argument.", "CSV export requires --output PATH.",
+    "Invalid or duplicate export option.", "Cannot write export output: "
 };
 const std::array<const char*, text_count> spanish_text = {
     "Anterior", "Siguiente", "Pag", "Navegar", "Acciones", "Sistema",
@@ -56,6 +61,8 @@ const std::array<const char*, text_count> spanish_text = {
     "  --filter TEXT  Busca texto en nombres (ignora may\u00fasculas ASCII); combinar con --ext.\n"
     "  --ext EXT      Filtra por extensi\u00f3n final (ignora may\u00fasculas ASCII), con o sin punto.\n"
     "                 / edita ambos filtros; F los borra. Los bytes no ASCII coinciden exactamente.\n"
+    "  --export FORMAT DIR  Exporta los hijos directos como JSON o CSV (CSV requiere --output).\n"
+    "  --output FILE  Escribe la exportaci\u00f3n de forma at\u00f3mica; JSON usa stdout por defecto.\n"
     "  --headless     Lee eventos de stdin e imprime el estado.\n"
     "                 Enter navega, Backspace vuelve al padre, O escribe una ruta.\n"
     "                 Headless: ENTER, BACKSPACE, CD <ruta>, REFRESH, SORT <key> <order>, FILTER <texto>, EXT <ext>, CLEAR_FILTER.\n"
@@ -73,7 +80,10 @@ const std::array<const char*, text_count> spanish_text = {
     "--order requiere asc o desc.", "Evento SORT no v\u00e1lido.",
     "[S] ordenar [T] sentido", "Orden", "tama\u00f1o", "nombre", "fecha",
     "[/] filtrar [F] borrar", "Filtro", "El nombre contiene:", "Extensi\u00f3n:", "Tab cambia el campo; Enter aplica; Esc cancela",
-    "--filter requiere un valor.", "--ext requiere un valor.", "Evento de filtro no v\u00e1lido."
+    "--filter requiere un valor.", "--ext requiere un valor.", "Evento de filtro no v\u00e1lido.",
+    "--export requiere json o csv.", "--export no se puede combinar con --headless o --save-settings.",
+    "--export requiere exactamente un directorio.", "La exportaci\u00f3n CSV requiere --output RUTA.",
+    "Opci\u00f3n de exportaci\u00f3n no v\u00e1lida o duplicada.", "No se pudo escribir la exportaci\u00f3n: "
 };
 }
 

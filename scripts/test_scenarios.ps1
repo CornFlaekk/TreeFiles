@@ -431,6 +431,76 @@ try {
     $output = Run-Headless @('FILTER', 'EXT', 'q') $filterRoot
     Check ($output.Contains('Invalid filter event')) 'headless filter commands require a value'
 
+    $exportRoot = Join-Path $testRoot 'export raíz, root'
+    $exportContext = Join-Path $exportRoot 'context'
+    New-Item -ItemType Directory -Path $exportContext -Force | Out-Null
+    Write-TestFile (Join-Path $exportRoot 'alpha, ñ.txt') 12
+    Write-TestFile (Join-Path $exportRoot 'beta.txt') 20
+    Write-TestFile (Join-Path $exportContext 'deep.txt') 5
+    $configBeforeExport = [Convert]::ToBase64String([IO.File]::ReadAllBytes($env:TREEFILES_CONFIG))
+
+    $result = Run-Cli "--export=json --page-size=1 --sort=name --order=asc `"$exportRoot`""
+    Check ($result.Code -eq 0 -and $result.Error.Length -eq 0) 'JSON export writes only the report to stdout'
+    $jsonExport = $result.Output | ConvertFrom-Json
+    Check ($jsonExport.schema_version -eq 1 -and $jsonExport.complete) 'JSON export has the stable complete v1 envelope'
+    Check ($jsonExport.entries.Count -eq 3) 'JSON export ignores page size and includes every direct child'
+    Check ($jsonExport.entries[0].path -eq 'alpha, ñ.txt' -and $jsonExport.entries[0].type -eq 'file') 'JSON export keeps Unicode paths and applies name sorting'
+    Check (@($jsonExport.entries | Where-Object { $_.depth -ne 0 }).Count -eq 0) 'JSON export does not enumerate directory children'
+    $exportDirectory = $jsonExport.entries | Where-Object { $_.type -eq 'directory' }
+    Check ($exportDirectory.size_bytes -eq 5 -and $exportDirectory.size_status -eq 'complete') 'JSON export reports aggregate directory size in bytes'
+
+    $filteredJsonResult = Run-Cli "--export json --page-size 1 --filter alpha --ext=.TXT --lang=es `"$exportRoot`""
+    $filteredJson = $filteredJsonResult.Output | ConvertFrom-Json
+    Check ($filteredJsonResult.Code -eq 0 -and $filteredJson.entries.Count -eq 2) 'JSON export shares filename and extension filter semantics'
+    Check ($filteredJson.entries[0].path -eq 'alpha, ñ.txt' -and $filteredJson.entries[1].type -eq 'directory') 'filtered export retains directory context'
+    Check (($filteredJson.PSObject.Properties.Name -join ',') -eq ($jsonExport.PSObject.Properties.Name -join ',') -and $filteredJson.entries[0].type -eq $jsonExport.entries[0].type) 'Spanish does not translate the JSON schema or entry types'
+
+    $csvPath = Join-Path $testRoot 'export report.csv'
+    $csvResult = Run-Cli "--export=csv --output=`"$csvPath`" --page-size=1 --sort=name --order=asc `"$exportRoot`""
+    $csvRows = @(Import-Csv -LiteralPath $csvPath -Encoding UTF8)
+    Check ($csvResult.Code -eq 0 -and $csvResult.Output.Length -eq 0 -and $csvRows.Count -eq 3) 'CSV export uses the file and parser without page truncation'
+    Check ($csvRows[0].path -eq 'alpha, ñ.txt' -and $csvRows[0].scan_complete -eq 'true') 'CSV quotes comma and Unicode fields correctly'
+    Check (-not (Test-Path -LiteralPath (Join-Path $testRoot 'config con espacios ñ/config.ini')) -or
+        $configBeforeExport -eq [Convert]::ToBase64String([IO.File]::ReadAllBytes($env:TREEFILES_CONFIG))) 'export does not modify saved settings'
+
+    foreach ($arguments in @(
+        "--export yaml `"$exportRoot`"",
+        '--export json',
+        "--export csv `"$exportRoot`"",
+        "--output `"$csvPath`" `"$exportRoot`"",
+        "--export json --headless `"$exportRoot`"",
+        "--export json --save-settings `"$exportRoot`""
+    )) {
+        $invalidExport = Run-Cli $arguments
+        Check ($invalidExport.Code -eq 2) "invalid export arguments are rejected: $arguments"
+    }
+
+    $missingRoot = Join-Path $testRoot 'missing export root'
+    $missingJson = Run-Cli "--export json `"$missingRoot`""
+    $failureReport = $missingJson.Output | ConvertFrom-Json
+    Check ($missingJson.Code -eq 1 -and -not $failureReport.complete -and $failureReport.diagnostics.Count -gt 0) 'root failure returns a diagnostic JSON report and code 1'
+    $preservedCsv = Join-Path $testRoot 'preserved.csv'
+    [IO.File]::WriteAllText($preservedCsv, 'previous report')
+    $failedCsv = Run-Cli "--export csv --output `"$preservedCsv`" `"$missingRoot`""
+    Check ($failedCsv.Code -eq 1 -and [IO.File]::ReadAllText($preservedCsv) -eq 'previous report') 'scan failure preserves the previous output file'
+
+    $blockedOutput = Join-Path $testRoot 'blocked-output.csv'
+    New-Item -ItemType Directory -Path $blockedOutput | Out-Null
+    [IO.File]::WriteAllText((Join-Path $blockedOutput 'keep.txt'), 'preserve')
+    $failedWrite = Run-Cli "--export csv --output `"$blockedOutput`" `"$exportRoot`""
+    Check ($failedWrite.Code -eq 1 -and [IO.File]::ReadAllText((Join-Path $blockedOutput 'keep.txt')) -eq 'preserve') 'replacement failure leaves destination and its contents intact'
+    Check (@(Get-ChildItem -LiteralPath $testRoot -Force | Where-Object { $_.Name -like '.treefiles-tmp-*' }).Count -eq 0) 'failed output replacement cleans its temporary file'
+    $emptyRoot = Join-Path $testRoot 'empty export root'
+    New-Item -ItemType Directory -Path $emptyRoot | Out-Null
+    $emptyJsonResult = Run-Cli "--export json `"$emptyRoot`""
+    $emptyJson = $emptyJsonResult.Output | ConvertFrom-Json
+    Check ($emptyJsonResult.Code -eq 0 -and $emptyJson.entries.Count -eq 0) 'empty roots produce valid empty JSON reports'
+    $emptyCsvPath = Join-Path $testRoot 'empty.csv'
+    $emptyCsvResult = Run-Cli "--export csv --output `"$emptyCsvPath`" `"$emptyRoot`""
+    $emptyCsvRows = @(Import-Csv -LiteralPath $emptyCsvPath -Encoding UTF8)
+    Check ($emptyCsvResult.Code -eq 0 -and $emptyCsvRows.Count -eq 0 -and
+        (Get-Content -LiteralPath $emptyCsvPath -TotalCount 1) -eq 'root,path,type,size_bytes,depth,size_status,scan_complete') 'empty CSV contains its header and no data rows'
+
     Write-Host "Results: $script:checks passed, 0 failed"
 } finally {
     if ($null -eq $oldConfig) { Remove-Item Env:TREEFILES_CONFIG -ErrorAction SilentlyContinue }
