@@ -22,7 +22,7 @@ TreeFiles/
 │   ├── export_utils.h         # JSON/CSV report schema, serializers and atomic output
 │   ├── ui_utils.h             # TUI rendering functions
 │   ├── localization.h         # English/Spanish string catalog
-│   ├── settings.h             # Saved bar colors
+│   ├── settings.h             # Saved colors and app preferences
 │   ├── platform_utils.h       # Windows/Linux helpers and config location
 │   └── version.h              # Application version
 ├── src/
@@ -230,7 +230,8 @@ struct EntryInfo {
 - **Thread safety:** `std::mutex` guards the directory size cache. `std::atomic<bool>` for loading flags.
 - **Dependencies:** C++17 standard library + the platform's curses backend. Keep platform-specific APIs in `platform_utils.cpp`.
 - **Localization:** All UI strings go through `localization.h`. English is the default; Spanish is selected with `--lang es`. Keep headless protocol keys and persisted color names stable.
-- **Configuration:** `settings.cpp` reads/writes colors, replacing the config atomically through `platform_utils.cpp`. Always set `TREEFILES_CONFIG` to an owned fixture in integration tests.
+- **Configuration:** `settings.cpp` reads/writes app preferences, replacing `config.ini` atomically through `platform_utils.cpp`. Always set `TREEFILES_CONFIG` to an owned fixture in integration tests.
+- **Preferences:** One `config.ini` stores canonical colors, language (`en`/`es`) and positive `page_size`; defaults < saved config < CLI. Session overrides persist only with `--save-settings`; color saves must preserve saved language/page values.
 - **Paths:** Keep filesystem paths as `std::filesystem::path`; use `u8string()` for display and `u8path()` for UTF-8 input. Windows arguments come from the wide-character command line.
 - **Line endings:** `.gitattributes` enforces LF so Linux scripts work after a Windows checkout.
 
