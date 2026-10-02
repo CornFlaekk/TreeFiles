@@ -565,7 +565,7 @@ f8=$(extract_frame "$output" 8)
 check "CLEAR_FILTER clears filename and extension" "$f8" 'filter_extension: '
 check "clearing restores root files" "$f8" 'matching_files: 3'
 output=$(printf 'q\n' | "$BINARY" --headless --filter "Annual Report" --ext=.TXT "$filter_root")
-check "CLI accepts filters containing spaces" "$(extract_frame "$output" 0)" 'filter_text: annual report'
+check "CLI preserves filters containing spaces and original case" "$(extract_frame "$output" 0)" 'filter_text: Annual Report'
 check "CLI reports canonical matching count" "$(extract_frame "$output" 0)" 'matching_files: 1'
 for argument in filter ext; do
     if output=$("$BINARY" --headless "--$argument" 2>&1); then status=0; else status=$?; fi
