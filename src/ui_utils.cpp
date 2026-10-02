@@ -23,7 +23,8 @@ static void draw_horizontal_line(int row, int col_start, int col_end, chtype lef
     mvaddch(row, col_end, right);
 }
 
-void draw_header(int cols, const std::filesystem::path& current_path, int page, int total_pages) {
+void draw_header(int cols, const std::filesystem::path& current_path, int page, int total_pages,
+                 SortOptions sort) {
     // Top border
     draw_horizontal_line(0, 0, cols - 1, ACS_ULCORNER, ACS_HLINE, ACS_URCORNER);
 
@@ -43,7 +44,13 @@ void draw_header(int cols, const std::filesystem::path& current_path, int page, 
     }
 
     int path_x = 16;
-    int max_path_w = cols - path_x - 20;
+    const Text sort_text = sort.key == SortKey::size ? Text::SortSize
+        : sort.key == SortKey::name ? Text::SortName : Text::SortMtime;
+    std::string right_status = std::string(text(Text::SortLabel)) + ": " + text(sort_text) + "/" + sort_order_name(sort.order);
+    if (total_pages > 1)
+        right_status += " | " + std::string(text(Text::Page)) + " " + std::to_string(page + 1) + "/" + std::to_string(total_pages);
+    int right_x = cols - 3 - static_cast<int>(right_status.size());
+    int max_path_w = right_x - path_x - 4;
     if (max_path_w > 5 && (int)path_str.size() > max_path_w) {
         path_str = path_str.substr(0, max_path_w - 1) + "\u2026";
     }
@@ -51,15 +58,9 @@ void draw_header(int cols, const std::filesystem::path& current_path, int page, 
         mvaddstr(0, path_x, path_str.c_str());
     }
 
-    // Right: page info if applicable
-    if (total_pages > 1) {
-        char buf[32];
-        snprintf(buf, sizeof(buf), "%s %d/%d", text(Text::Page), page + 1, total_pages);
-        int right_x = cols - 3 - (int)strlen(buf);
-        if (right_x > path_x + 2) {
-            mvaddch(0, right_x - 2, ACS_VLINE);
-            mvaddstr(0, right_x, buf);
-        }
+    if (right_x > path_x + 2) {
+        mvaddch(0, right_x - 2, ACS_VLINE);
+        mvaddstr(0, right_x, right_status.c_str());
     }
 }
 
@@ -71,7 +72,7 @@ struct FooterSection {
 static const FooterSection sections[] = {
     {Text::Navigation, {Text::MoveBinding, Text::PageBinding, Text::EnterDirectoryBinding, Text::ParentDirectoryBinding}},
     {Text::Actions, {Text::ExpandBinding, Text::OpenBinding, Text::DeleteBinding, Text::ChangeRootBinding}},
-    {Text::System, {Text::ColorBinding, Text::WarningsBinding, Text::RefreshBinding, Text::QuitBinding}},
+    {Text::System, {Text::ColorBinding, Text::SortBinding, Text::WarningsBinding, Text::RefreshBinding, Text::QuitBinding}},
 };
 
 // Build a flat string of bindings for a section

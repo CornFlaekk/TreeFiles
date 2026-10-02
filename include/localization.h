@@ -12,6 +12,8 @@ enum class Text {
     WarningsBinding, ScanWarnings, ScanDiagnostics, PressAnyKey, SizePartial, SizeUnavailable,
     RefreshBinding, EnterDirectoryBinding, ParentDirectoryBinding, ChangeRootBinding,
     PathPrompt, PathPromptHint, NavigationError,
+    SortKeyError, SortOrderError, InvalidSortEvent,
+    SortBinding, SortLabel, SortSize, SortName, SortMtime,
     Count
 };
 

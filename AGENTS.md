@@ -18,7 +18,7 @@ TreeFiles/
 ├── README.md
 ├── .gitignore
 ├── include/
-│   ├── file_utils.h           # EntryInfo struct, file system functions
+│   ├── file_utils.h           # EntryInfo, sorting and file system functions
 │   ├── ui_utils.h             # TUI rendering functions
 │   ├── localization.h         # English/Spanish string catalog
 │   ├── settings.h             # Saved bar colors
@@ -112,6 +112,8 @@ Each line is one event:
 | `CD <path>` | Change directory | `path` is the complete literal UTF-8 remainder, relative to `current_path` unless absolute |
 | `o` / `O` | Open path dialog | Interactive only; accepts relative or absolute paths and Escape cancels |
 | `r` / `R` / `REFRESH` | Refresh | Clear cached sizes and rescan the current root |
+| `SORT <key> <order>` | Sort | Set canonical sorting options, for example `SORT mtime asc` |
+| `S` / `T` | Sort shortcut | Cycle the key / toggle the order |
 | `COLOR red blue` | Color setting | Save foreground/background using canonical English names |
 | `w` / `W` | Warnings | Show scan diagnostics (interactive); headless prints a diagnostic popup record |
 
@@ -136,6 +138,7 @@ message: Delete "foo.txt"?
 Each frame contains:
 - `current_path`, `selected_index`, `scroll_offset`, `visible_rows`
 - `page_size` (default 30; configured with `--page-size N` in either mode)
+- `sort_key` (`size`, `name`, `mtime`) and `sort_order` (`asc`, `desc`)
 - `language` (default en; selected with `--lang en|es`)
 - `expanded_dirs` set
 - `last_scan_ms`, `bar_fg`, `bar_bg`
@@ -213,6 +216,7 @@ struct EntryInfo {
 - **Types:** Prefer `std::filesystem::path` for paths, `std::uintmax_t` for file sizes.
 - **Error handling:** Try/catch for filesystem operations, return 0/bool for failures.
 - **Scanning:** Use `ScanResult`/`ScanIssue`; never turn a filesystem error into a successful zero-byte size. Do not traverse symlinks or Windows directory junctions.
+- **Sorting:** Sort real siblings before pagination. Keep name/path tie-breaks bytewise and deterministic; missing modification times stay last for either direction.
 - **Thread safety:** `std::mutex` guards the directory size cache. `std::atomic<bool>` for loading flags.
 - **Dependencies:** C++17 standard library + the platform's curses backend. Keep platform-specific APIs in `platform_utils.cpp`.
 - **Localization:** All UI strings go through `localization.h`. English is the default; Spanish is selected with `--lang es`. Keep headless protocol keys and persisted color names stable.

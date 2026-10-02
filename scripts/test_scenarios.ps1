@@ -377,6 +377,27 @@ try {
         }
     }
 
+    $sortChild = Join-Path $bigDirectory 'sub'
+    New-Item -ItemType Directory -Path $sortChild | Out-Null
+    Write-TestFile (Join-Path $sortChild 'child-a.txt') 1
+    Write-TestFile (Join-Path $sortChild 'child-z.txt') 1
+    $sortEvents = @('n', 'SORT name desc', 'REFRESH', ('CD ' + $sortChild), 'BACKSPACE', 'S', 'T', 'q')
+    $output = Run-Headless $sortEvents $bigDirectory @('--page-size=2')
+    Check ((Frame $output 0).Contains('sort_key: size') -and (Frame $output 0).Contains('sort_order: desc')) 'default ordering is size descending'
+    Check ((Frame $output 1).Contains('file_0002.txt')) 'page navigation reaches the second page before sorting'
+    Check ((Frame $output 2).Contains('file_0049.txt') -and (Frame $output 2).Contains('selected_index: 0') -and (Frame $output 2).Contains('scroll_offset: 0')) 'changing sort resets pagination and selects first result'
+    Check ((Frame $output 3).Contains('sort_key: name') -and (Frame $output 3).Contains('sort_order: desc')) 'refresh preserves the selected ordering'
+    Check ((Frame $output 4).Contains("current_path: $sortChild") -and (Frame $output 4).Contains('sort_key: name')) 'root navigation preserves ordering'
+    Check ((Frame $output 5).Contains("current_path: $bigDirectory") -and (Frame $output 5).Contains('sort_order: desc')) 'returning to the parent preserves ordering'
+    Check ((Frame $output 6).Contains('sort_key: mtime') -and (Frame $output 6).Contains('sort_order: desc')) 'S cycles the sort criterion'
+    Check ((Frame $output 7).Contains('sort_key: mtime') -and (Frame $output 7).Contains('sort_order: asc')) 'T toggles sort direction'
+    $output = Run-Headless @('q') $bigDirectory @('--sort=name', '--order=asc')
+    Check ((Frame $output 0).Contains('sort_key: name') -and (Frame $output 0).Contains('sort_order: asc') -and (Frame $output 0).Contains('file_0000.txt')) 'CLI equals forms select canonical sort state'
+    foreach ($arguments in @('--sort', '--sort=type', '--order', '--order=sideways')) {
+        $result = Run-Cli $arguments
+        Check ($result.Code -eq 2) "invalid sort option is rejected before curses: $arguments"
+    }
+
     Write-Host "Results: $script:checks passed, 0 failed"
 } finally {
     if ($null -eq $oldConfig) { Remove-Item Env:TREEFILES_CONFIG -ErrorAction SilentlyContinue }

@@ -99,7 +99,7 @@ The Makefile is for Linux; use CMake or the PowerShell scripts on Windows.
 ## Usage
 
 ~~~text
-treefiles [--headless] [--page-size N] [--lang en|es] [directory]
+treefiles [--headless] [--page-size N] [--lang en|es] [--sort size|name|mtime] [--order asc|desc] [directory]
 ~~~
 
 | Option | Behavior |
@@ -107,6 +107,8 @@ treefiles [--headless] [--page-size N] [--lang en|es] [directory]
 | `directory` | Directory to inspect; defaults to the current directory |
 | `--page-size N` / `--page-size=N` | Files and directories per page, default 30 |
 | `--lang en` / `--lang es` | Interface language; English is the default |
+| `--sort KEY` | Sort by `size`, `name`, or `mtime`; default `size` |
+| `--order DIR` | Sort `asc` or `desc`; default `desc` |
 | `--headless` | Read events from stdin and print structured frames |
 | `--help`, `-h` | Show command-line help |
 | `--version` | Show the application version |
@@ -139,10 +141,20 @@ This option works in both interactive and headless mode. Use `--help` for usage.
 ./build/linux-debug/treefiles --page-size 10 .
 ```
 
-Entries are sorted by size, largest first, and then by name. Expanding a folder
-shows its children in the tree. The size bar is relative to the entries displayed
-at that level. Pagination and scrolling are independent: a large page can still
-be scrolled to fit the terminal.
+Entries default to size descending, with ties sorted by name ascending. Use
+`--sort` and `--order` to choose another order. Name comparisons use UTF-8 byte
+order and do not depend on the current locale. Equal sizes or modification
+times use the name and then path as stable tie-breakers. Entries without a
+readable modification time appear after entries with a time in either
+direction, and `W` shows the scan diagnostic.
+
+Press `S` to cycle size, name, and modification time, and `T` to switch between
+ascending and descending. Changing the order starts at the first page and
+selects the first item. Sorting is applied to all real entries before
+pagination, including separately inside expanded directories. Expanding a
+folder shows its children in the tree. The size bar is relative to the entries
+displayed at that level. Pagination and scrolling are independent: a large page
+can still be scrolled to fit the terminal.
 
 Displayed sizes are logical file lengths in bytes, including sparse files; they
 do not estimate how many storage blocks a file occupies. Files larger than 1 TiB
@@ -163,6 +175,8 @@ are included in directory totals.
 | `E` | Toggle directory expansion or activate a pagination row |
 | `N` / `P` | Next / previous page of the selected directory |
 | `R` | Re-scan the current root and update cached sizes |
+| `S` | Cycle size, name, and modification-time sorting |
+| `T` | Toggle ascending or descending order |
 | Space | Open with the system's default application |
 | Delete | Delete the selected file or directory after confirmation |
 | `B` | Choose the bar's background and text colors |
@@ -227,15 +241,16 @@ Pipe one event per line. Arrow events use `UP`, `DOWN`, `LEFT` and `RIGHT`;
 `CD <path>` changes to a path relative to the current root or to an absolute
 path; the entire remainder of the line is treated as the literal path. Letter shortcuts work as
 in the interactive interface. `COLOR foreground background` applies and saves
-colors; `B` only logs the available choices in headless mode.
+colors; `SORT <key> <order>` changes sorting with canonical values such as
+`SORT mtime asc`; `B` only logs the available choices in headless mode.
 
 ~~~powershell
 'COLOR white blue', 'j', 'l', 'q' |
     .\build\windows-debug\treefiles.exe --headless --page-size 10 .
 ~~~
 
-Frames contain the current path, language, page size, pagination, selection,
-scrolling, expansion, colors, entry list, `scan_status`, and structured
+Frames contain the current path, language, page size, `sort_key`/`sort_order`,
+pagination, selection, scrolling, expansion, colors, entry list, `scan_status`, and structured
 `diagnostics_count`/`diagnostic_N` records. Headless opening logs an action;
 confirmed deletion still removes files. Exit codes are 0 on success, 1 when the
 root cannot be listed, and 2 for invalid command-line options. Errors isolated

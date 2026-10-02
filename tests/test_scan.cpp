@@ -6,13 +6,14 @@
 #include <fstream>
 #include <iostream>
 #include <set>
+#include <chrono>
 
 namespace fs = std::filesystem;
 
 #define CHECK(condition) do { \
     if (!(condition)) { \
         std::cerr << "FAIL at line " << __LINE__ << ": " << #condition << '\n'; \
-        std::abort(); \
+        std::exit(1); \
     } \
 } while (false)
 
@@ -133,11 +134,135 @@ static void test_links_are_listed_without_traversal() {
     CHECK(!error && fs::exists(target / "inside.txt"));
 }
 
+static std::vector<std::string> names(const ScanResult& result) {
+    std::vector<std::string> values;
+    for (const auto& entry : result.entries) {
+        if (entry.type != "[RESTO_NEXT]" && entry.type != "[RESTO_PREV]")
+            values.push_back(entry.name);
+    }
+    return values;
+}
+
+static void test_sorting_and_missing_modification_times() {
+    const fs::path root = test_directory.path / "sorting";
+    fs::create_directories(root / "folder");
+    write_file(root / "a.txt", "a");
+    write_file(root / "b.txt", "bbb");
+    write_file(root / "c.txt", "cc");
+    write_file(root / "d.txt", "d");
+    write_file(root / "folder" / "inside.txt", "1234");
+    write_file(root / "folder" / "small.txt", "s");
+    write_file(root / "folder" / "large.txt", "123");
+
+    const auto base = fs::file_time_type::clock::now();
+    std::error_code error;
+    fs::last_write_time(root / "b.txt", base + std::chrono::hours(1), error);
+    CHECK(!error);
+    fs::last_write_time(root / "a.txt", base + std::chrono::hours(2), error);
+    CHECK(!error);
+    fs::last_write_time(root / "d.txt", base + std::chrono::hours(2), error);
+    CHECK(!error);
+    fs::last_write_time(root / "c.txt", base + std::chrono::hours(3), error);
+    CHECK(!error);
+
+    const auto scan = [&](SortKey key, SortOrder order, int page_size = 30,
+                          const ScanOptions& extra = {}) {
+        ScanOptions options = extra;
+        options.last_write_time_reader = [&](const fs::path& path) {
+            // MinGW cannot set directory timestamps; file timestamps still use real metadata.
+            return path == root / "folder" ? base + std::chrono::hours(4) : fs::last_write_time(path);
+        };
+        options.sort = {key, order};
+        options.reset_pagination = true;
+        return scan_tree_entries(root, {}, page_size, options);
+    };
+    CHECK((names(scan(SortKey::size, SortOrder::desc)) ==
+           std::vector<std::string>{"folder", "b.txt", "c.txt", "a.txt", "d.txt"}));
+    CHECK((names(scan(SortKey::size, SortOrder::asc)) ==
+           std::vector<std::string>{"a.txt", "d.txt", "c.txt", "b.txt", "folder"}));
+    CHECK((names(scan(SortKey::name, SortOrder::asc)) ==
+           std::vector<std::string>{"a.txt", "b.txt", "c.txt", "d.txt", "folder"}));
+    CHECK((names(scan(SortKey::name, SortOrder::desc)) ==
+           std::vector<std::string>{"folder", "d.txt", "c.txt", "b.txt", "a.txt"}));
+    CHECK((names(scan(SortKey::mtime, SortOrder::asc)) ==
+           std::vector<std::string>{"b.txt", "a.txt", "d.txt", "c.txt", "folder"}));
+    CHECK((names(scan(SortKey::mtime, SortOrder::desc)) ==
+           std::vector<std::string>{"folder", "c.txt", "a.txt", "d.txt", "b.txt"}));
+    ScanOptions expanded_options;
+    expanded_options.sort = {SortKey::size, SortOrder::desc};
+    expanded_options.reset_pagination = true;
+    const auto expanded = scan_tree_entries(root, {root / "folder"}, 2, expanded_options);
+    const auto inside = std::find_if(expanded.entries.begin(), expanded.entries.end(),
+        [](const EntryInfo& entry) { return entry.name == "inside.txt"; });
+    CHECK(inside != expanded.entries.end());
+    CHECK(inside + 1 != expanded.entries.end() && (inside + 1)->name == "large.txt");
+    CHECK(std::find_if(expanded.entries.begin(), expanded.entries.end(),
+        [](const EntryInfo& entry) { return entry.name == "small.txt"; }) == expanded.entries.end());
+    expand_resto(root / "folder");
+    auto nested_options = expanded_options;
+    nested_options.reset_pagination = false;
+    const auto nested_page = scan_tree_entries(root, {root / "folder"}, 2, nested_options);
+    CHECK(std::find_if(nested_page.entries.begin(), nested_page.entries.end(),
+        [](const EntryInfo& entry) { return entry.name == "small.txt"; }) != nested_page.entries.end());
+    reset_resto_state();
+
+    ScanOptions missing_time;
+    missing_time.error_injector = [](const fs::path& path, const std::string& operation) {
+        if (path.filename() == "d.txt" && operation == "last_write_time")
+            return std::make_error_code(std::errc::permission_denied);
+        return std::error_code{};
+    };
+    const auto partial = scan(SortKey::mtime, SortOrder::desc, 30, missing_time);
+    CHECK(partial.status == ScanStatus::partial);
+    CHECK(!partial.diagnostics.empty());
+    CHECK(names(partial).back() == "d.txt");
+    const auto partial_ascending = scan(SortKey::mtime, SortOrder::asc, 30, missing_time);
+    CHECK(names(partial_ascending).back() == "d.txt");
+
+    const auto name_page = scan(SortKey::name, SortOrder::asc, 2);
+    CHECK((names(name_page) == std::vector<std::string>{"a.txt", "b.txt"}));
+    reset_resto_state();
+    expand_resto(root);
+    ScanOptions page_options;
+    page_options.sort = {SortKey::size, SortOrder::asc};
+    const auto size_page = scan_tree_entries(root, {}, 2, page_options);
+    CHECK((names(size_page) == std::vector<std::string>{"c.txt", "b.txt"}));
+    reset_resto_state();
+
+    clear_dir_size_cache();
+    int recursive_size_reads = 0;
+    ScanOptions counted;
+    counted.file_size_reader = [&](const fs::path& path) {
+        if (path.parent_path() == root / "folder") ++recursive_size_reads;
+        return fs::file_size(path);
+    };
+    counted.sort = {SortKey::size, SortOrder::desc};
+    (void)scan_tree_entries(root, {}, 30, counted);
+    CHECK(recursive_size_reads == 3);
+    recursive_size_reads = 0;
+    counted.sort = {SortKey::name, SortOrder::asc};
+    (void)scan_tree_entries(root, {}, 30, counted);
+    CHECK(recursive_size_reads == 0);
+    clear_dir_size_cache();
+    counted.sort = {SortKey::mtime, SortOrder::asc};
+    (void)scan_tree_entries(root, {}, 30, counted);
+    CHECK(recursive_size_reads == 3);
+    clear_dir_size_cache();
+
+    SortKey key = SortKey::size;
+    SortOrder order = SortOrder::desc;
+    CHECK(parse_sort_key("mtime", key) && key == SortKey::mtime);
+    CHECK(!parse_sort_key("extension", key));
+    CHECK(parse_sort_order("asc", order) && order == SortOrder::asc);
+    CHECK(!parse_sort_order("up", order));
+}
+
 int main() {
     fs::create_directories(test_directory.path);
     test_child_error_keeps_accessible_results();
     test_root_error_is_reported_as_failure();
     test_links_are_listed_without_traversal();
+    test_sorting_and_missing_modification_times();
     std::cout << "test_scan: PASS\n";
     return 0;
 }

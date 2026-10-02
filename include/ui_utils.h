@@ -6,7 +6,8 @@
 #include "file_utils.h"
 
 void draw_terminal_border();
-void draw_header(int cols, const std::filesystem::path& current_path, int page, int total_pages);
+void draw_header(int cols, const std::filesystem::path& current_path, int page, int total_pages,
+                 SortOptions sort = {});
 void draw_footer(int rows, int cols, int selected, int total_entries, double last_scan_ms,
                  bool scan_has_warnings = false);
 int footer_height(int cols);
