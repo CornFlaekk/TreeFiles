@@ -26,22 +26,49 @@ int main() {
     check(save_color_settings(config, {7, 1}, error), "replace an existing config");
     colors = load_color_settings(config, error);
     check(colors.foreground == 7 && colors.background == 1, "replacement survives a reload");
+    check(save_preferences(config, {6, 4, "es", 7}, error), "save language and page size");
+    check(save_color_settings(config, {7, 1}, error), "color-only save updates an existing preferences file");
+    colors = load_preferences(config, error);
+    check(colors.foreground == 7 && colors.background == 1 && colors.language == "es" && colors.page_size == 7,
+          "changing colors preserves saved language and page size");
     check(!save_color_settings(config, {-1, 3}, error), "invalid colors cannot overwrite config");
     colors = load_color_settings(config, error);
-    check(colors.foreground == 7 && colors.background == 1, "rejected save preserves existing colors");
+    check(colors.foreground == 7 && colors.background == 1 && colors.language == "es" && colors.page_size == 7,
+          "rejected save preserves existing preferences");
 
     {
         std::ofstream file(config);
         file << "# settings\nforeground = green\r\nbackground=invalid\nunknown=red\nbroken line\n";
     }
     colors = load_color_settings(config, error);
-    check(colors.foreground == 2 && colors.background == 3, "invalid fields fall back independently");
+    check(colors.foreground == 2 && colors.background == 3 && colors.language == "en" && colors.page_size == 30,
+          "legacy config and invalid fields use independent defaults");
     {
         std::ofstream file(config);
-        file << "\xef\xbb\xbf" "foreground=blue\nbackground=white\n";
+        file << "\xef\xbb\xbf" "foreground=blue\nbackground=white\nlanguage = es\npage_size = 12\nunknown=value\n";
     }
-    colors = load_color_settings(config, error);
-    check(colors.foreground == 4 && colors.background == 7, "UTF-8 BOM from a Windows editor is supported");
+    colors = load_preferences(config, error);
+    check(colors.foreground == 4 && colors.background == 7 && colors.language == "es" && colors.page_size == 12,
+          "UTF-8 BOM, whitespace and unknown keys are supported");
+    {
+        std::ofstream file(config);
+        file << "foreground=red\nbackground=cyan\nlanguage=fr\npage_size=0\n";
+    }
+    colors = load_preferences(config, error);
+    check(colors.foreground == 1 && colors.background == 6 && colors.language == "en" && colors.page_size == 30,
+          "invalid language and page size fall back independently");
+    {
+        std::ofstream file(config);
+        file << "page_size=-1\nlanguage=es\n";
+    }
+    colors = load_preferences(config, error);
+    check(colors.language == "es" && colors.page_size == 30, "negative page size is rejected without losing language");
+    {
+        std::ofstream file(config);
+        file << "page_size=2147483648\n";
+    }
+    colors = load_preferences(config, error);
+    check(colors.page_size == 30, "page size overflow uses the default");
     const auto directory_target = fixture.path / "directory";
     fs::create_directories(directory_target);
     std::ofstream(directory_target / "keep.txt") << "keep";
