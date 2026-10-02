@@ -405,7 +405,6 @@ read_frame_from_fd "${REFRESH_PROC[0]}"
 check_not "refresh sees external deletion" "$LAST_FRAME" 'added.txt'
 check "refresh keeps a valid selection after deletion" "$LAST_FRAME" 'a.txt'
 printf 'q\n' >&"${REFRESH_PROC[1]}"
-read_frame_from_fd "${REFRESH_PROC[0]}"
 wait "$REFRESH_PROC_PID"
 check "refresh session exits cleanly" "$?" '^0$'
 
@@ -425,7 +424,6 @@ check_not "refresh removes stale Previous marker" "$LAST_FRAME" 'Previous'
 check_not "refresh removes stale Next marker" "$LAST_FRAME" 'Next'
 check "refresh clamps a deleted last-page selection" "$LAST_FRAME" 'selected_index: 0'
 printf 'q\n' >&"${PAGE_PROC[1]}"
-read_frame_from_fd "${PAGE_PROC[0]}"
 wait "$PAGE_PROC_PID"
 check "last-page refresh session exits cleanly" "$?" '^0$'
 
