@@ -1,5 +1,3 @@
-#include <thread>
-#include <chrono>
 #include <string>
 #include <cstring>
 #include <vector>
@@ -8,16 +6,29 @@
 #include "localization.h"
 #include <array>
 #include <tuple>
+#include <cwctype>
+#include <cstdint>
+#include <climits>
+#include <algorithm>
 
 void draw_terminal_border() {
     // Empty: header and footer now draw their own borders.
 }
-
 static void draw_horizontal_line(int row, int col_start, int col_end, chtype left, chtype mid, chtype right) {
     mvaddch(row, col_start, left);
     for (int c = col_start + 1; c < col_end; ++c)
         mvaddch(row, c, mid);
     mvaddch(row, col_end, right);
+}
+
+static std::string utf8_prefix(const std::string& value, size_t max_bytes) {
+    if (value.size() <= max_bytes) return value;
+    size_t prefix = max_bytes > 3 ? max_bytes - 3 : max_bytes;
+    while (prefix > 0 && prefix < value.size() &&
+           (static_cast<unsigned char>(value[prefix]) & 0xc0) == 0x80) --prefix;
+    std::string clipped = value.substr(0, prefix);
+    if (max_bytes > 3 && prefix + 3 <= max_bytes) clipped += "...";
+    return clipped;
 }
 
 void draw_header(int cols, const std::filesystem::path& current_path, int page, int total_pages) {
@@ -66,9 +77,9 @@ struct FooterSection {
 };
 
 static const FooterSection sections[] = {
-    {Text::Navigation, {Text::MoveBinding, Text::PageBinding}},
-    {Text::Actions, {Text::ExpandBinding, Text::OpenBinding, Text::DeleteBinding}},
-    {Text::System, {Text::ColorBinding, Text::QuitBinding}},
+    {Text::Navigation, {Text::MoveBinding, Text::PageBinding, Text::EnterDirectoryBinding, Text::ParentDirectoryBinding}},
+    {Text::Actions, {Text::ExpandBinding, Text::OpenBinding, Text::DeleteBinding, Text::ChangeRootBinding}},
+    {Text::System, {Text::ColorBinding, Text::CancelScanBinding, Text::WarningsBinding, Text::RefreshBinding, Text::QuitBinding}},
 };
 
 // Build a flat string of bindings for a section
@@ -110,7 +121,16 @@ int footer_height(int cols) {
     return count_content_lines(cols) + 2; // content + separator + bottom
 }
 
-void draw_footer(int rows, int cols, int selected, int total_entries, double last_scan_ms) {
+void draw_scan_status(int row, int cols, const std::string& status) {
+    if (row < 0 || cols < 4) return;
+    move(row, 0);
+    clrtoeol();
+    const std::string clipped = utf8_prefix(status, static_cast<size_t>(cols - 2));
+    if (!clipped.empty()) mvaddnstr(row, 1, clipped.c_str(), static_cast<int>(clipped.size()));
+}
+
+void draw_footer(int rows, int cols, int selected, int total_entries, double last_scan_ms,
+                 bool scan_has_warnings) {
     int content_lines = count_content_lines(cols);
     int footer_start = rows - 2 - content_lines;
 
@@ -120,10 +140,12 @@ void draw_footer(int rows, int cols, int selected, int total_entries, double las
     // Right info string (embedded in bottom border later)
     char right_buf[64];
     std::string scan_str = format_scan_time(last_scan_ms);
+    const char* scan_label = text(Text::Scan);
+    std::string decorated_scan = scan_has_warnings ? std::string(scan_label) + "*" : scan_label;
     if (total_entries > 0) {
-        snprintf(right_buf, sizeof(right_buf), " %d/%d  %s: %s ", selected + 1, total_entries, text(Text::Scan), scan_str.c_str());
+        snprintf(right_buf, sizeof(right_buf), " %d/%d  %s: %s ", selected + 1, total_entries, decorated_scan.c_str(), scan_str.c_str());
     } else {
-        snprintf(right_buf, sizeof(right_buf), " %s: %s ", text(Text::Scan), scan_str.c_str());
+        snprintf(right_buf, sizeof(right_buf), " %s: %s ", decorated_scan.c_str(), scan_str.c_str());
     }
 
     if (wide_footer(cols)) {
@@ -318,7 +340,8 @@ void print_directory_entries(const std::vector<EntryInfo>& entries, int selected
             attroff(A_BOLD);
             if (idx == selected) attroff(A_REVERSE);
         } else {
-            double percent = std::min(1.0, (double)e.size / parent_sizes[idx]);
+            double percent = e.size_status == SizeStatus::unavailable
+                ? 0.0 : std::min(1.0, (double)e.size / parent_sizes[idx]);
             int bar_width = std::max(1, (int)((content_cols - start_col - indent_width) * percent));
 
             attron(COLOR_PAIR(2));
@@ -327,9 +350,12 @@ void print_directory_entries(const std::vector<EntryInfo>& entries, int selected
             }
             attroff(COLOR_PAIR(2));
 
-            std::string size_str = human_readable_size(e.size);
+            std::string size_str = e.size_status == SizeStatus::unavailable
+                ? text(Text::SizeUnavailable) : human_readable_size(e.size);
+            if (e.size_status == SizeStatus::partial) size_str += " (" + std::string(text(Text::SizePartial)) + ")";
             std::string name_str = e.name;
             if (is_dir) name_str += "/";
+            if (e.type == "[LINK]") name_str += " @";
             std::string entry_text = name_str + "  " + size_str;
 
             if (idx == selected) attron(A_REVERSE);
@@ -403,6 +429,140 @@ bool confirm_popup(const std::string& message) {
             return false;
         }
     }
+}
+
+void show_scan_diagnostics(const ScanResult& result) {
+    int rows = 0, cols = 0;
+    getmaxyx(stdscr, rows, cols);
+    if (rows < 7 || cols < 16 || result.diagnostics.empty()) return;
+
+    std::vector<std::string> lines;
+    lines.reserve(result.diagnostics.size());
+    for (const auto& issue : result.diagnostics) {
+        lines.push_back(issue.path.u8string() + " [" + issue.operation + "]: " + issue.error.message());
+    }
+    const int height = std::min(rows - 2, std::max(6, std::min(12, static_cast<int>(lines.size()) + 4)));
+    const int width = std::min(cols - 2, 100);
+    WINDOW* win = newwin(height, width, (rows - height) / 2, (cols - width) / 2);
+    if (!win) return;
+    keypad(win, TRUE);
+    int first = 0;
+    while (true) {
+        werase(win);
+        box(win, 0, 0);
+        const std::string title = std::string(text(Text::ScanDiagnostics)) + " (" +
+                                  std::to_string(lines.size()) + ")";
+        mvwaddnstr(win, 0, 2, title.c_str(), width - 4);
+        const int visible = height - 4;
+        for (int line = 0; line < visible && first + line < static_cast<int>(lines.size()); ++line)
+            mvwaddnstr(win, line + 1, 2, lines[first + line].c_str(), width - 4);
+        const std::string hint = std::string(text(Text::PressAnyKey)) + " (Esc)";
+        mvwaddnstr(win, height - 2, 2, hint.c_str(), width - 4);
+        wrefresh(win);
+        const int input = wgetch(win);
+        if (input == KEY_UP || input == 'k') first = std::max(0, first - 1);
+        else if (input == KEY_DOWN || input == 'j')
+            first = std::min(std::max(0, static_cast<int>(lines.size()) - visible), first + 1);
+        else break;
+    }
+    delwin(win);
+    touchwin(stdscr);
+    refresh();
+}
+
+static std::string wide_to_utf8(const std::wstring& value) {
+    std::string encoded;
+    for (size_t index = 0; index < value.size(); ++index) {
+        std::uint32_t codepoint = static_cast<std::uint32_t>(value[index]);
+#if WCHAR_MAX <= 0xffff
+        if (codepoint >= 0xd800 && codepoint <= 0xdbff && index + 1 < value.size()) {
+            const std::uint32_t low = static_cast<std::uint32_t>(value[index + 1]);
+            if (low >= 0xdc00 && low <= 0xdfff) {
+                codepoint = 0x10000 + ((codepoint - 0xd800) << 10) + (low - 0xdc00);
+                ++index;
+            } else {
+                codepoint = 0xfffd;
+            }
+        } else if (codepoint >= 0xd800 && codepoint <= 0xdfff) {
+            codepoint = 0xfffd;
+        }
+#else
+        if (codepoint > 0x10ffff || (codepoint >= 0xd800 && codepoint <= 0xdfff))
+            codepoint = 0xfffd;
+#endif
+        if (codepoint <= 0x7f) {
+            encoded.push_back(static_cast<char>(codepoint));
+        } else if (codepoint <= 0x7ff) {
+            encoded.push_back(static_cast<char>(0xc0 | (codepoint >> 6)));
+            encoded.push_back(static_cast<char>(0x80 | (codepoint & 0x3f)));
+        } else if (codepoint <= 0xffff) {
+            encoded.push_back(static_cast<char>(0xe0 | (codepoint >> 12)));
+            encoded.push_back(static_cast<char>(0x80 | ((codepoint >> 6) & 0x3f)));
+            encoded.push_back(static_cast<char>(0x80 | (codepoint & 0x3f)));
+        } else {
+            encoded.push_back(static_cast<char>(0xf0 | (codepoint >> 18)));
+            encoded.push_back(static_cast<char>(0x80 | ((codepoint >> 12) & 0x3f)));
+            encoded.push_back(static_cast<char>(0x80 | ((codepoint >> 6) & 0x3f)));
+            encoded.push_back(static_cast<char>(0x80 | (codepoint & 0x3f)));
+        }
+    }
+    return encoded;
+}
+
+bool prompt_for_path(std::string& utf8_path) {
+    int rows = 0, cols = 0;
+    getmaxyx(stdscr, rows, cols);
+    if (rows < 9 || cols < 30) return false;
+    const int width = std::min(cols - 2, 82);
+    const int height = 7;
+    WINDOW* win = newwin(height, width, (rows - height) / 2, (cols - width) / 2);
+    if (!win) return false;
+    keypad(win, TRUE);
+    std::wstring value;
+    bool accepted = false;
+    while (true) {
+        werase(win);
+        box(win, 0, 0);
+        mvwaddnstr(win, 1, 2, text(Text::PathPrompt), width - 4);
+        mvwaddnstr(win, 5, 2, text(Text::PathPromptHint), width - 4);
+        const int field_width = width - 4;
+        const size_t start = value.size() > static_cast<size_t>(field_width)
+            ? value.size() - static_cast<size_t>(field_width) : 0;
+        if (start < value.size())
+            mvwaddnwstr(win, 3, 2, value.data() + start, field_width);
+        wmove(win, 3, 2 + static_cast<int>(std::min(value.size() - start,
+                                                    static_cast<size_t>(field_width - 1))));
+        wrefresh(win);
+
+        wint_t input = 0;
+        const int kind = wget_wch(win, &input);
+        if (kind == ERR) continue;
+        if ((kind == KEY_CODE_YES && input == KEY_BACKSPACE) || input == 8 || input == 127) {
+            if (!value.empty()) {
+                const wchar_t last = value.back();
+                value.pop_back();
+                if (last >= 0xdc00 && last <= 0xdfff && !value.empty() &&
+                    value.back() >= 0xd800 && value.back() <= 0xdbff) value.pop_back();
+            }
+        } else if ((kind == KEY_CODE_YES && input == KEY_ENTER) || input == L'\n' || input == L'\r') {
+            accepted = !value.empty();
+            break;
+        } else if (kind == OK && input == 27) {
+            break;
+        } else if (kind == OK && input >= 32 && value.size() < 512 &&
+                   (std::iswprint(static_cast<wint_t>(input)) ||
+                    (input >= 0xd800 && input <= 0xdfff))) {
+            value.push_back(static_cast<wchar_t>(input));
+        }
+    }
+
+    if (accepted) {
+        utf8_path = wide_to_utf8(value);
+    }
+    delwin(win);
+    touchwin(stdscr);
+    refresh();
+    return accepted;
 }
 
 std::pair<int, int> bar_color_selection_popup(int foreground, int background) {
@@ -485,50 +645,4 @@ std::string format_scan_time(double ms) {
             return std::string(buf);
         }
     }
-}
-
-void show_loading_animation(std::atomic<bool>& loading, std::atomic<bool>& started) {
-    const char* frames[] = {
-        "ooxooxoxx",
-        "oxxooxoox",
-        "xxxooxooo",
-        "xxxxooooo",
-        "xxoxooxoo",
-        "xooxooxxo",
-        "oooxooxxx",
-        "oooooxxxx"
-    };
-    int num_frames = sizeof(frames) / sizeof(frames[0]);
-    int frame = 0;
-    int rows, cols;
-    getmaxyx(stdscr, rows, cols);
-    int win_height = 7, win_width = 13;
-    int starty = (rows - win_height) / 2;
-    int startx = (cols - win_width) / 2;
-    int delay = 120;
-    int waited = 0;
-    while (loading && waited < 500) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(delay));
-        waited += delay;
-    }
-    if (!loading) return;
-    started = true;
-    WINDOW* win = newwin(win_height, win_width, starty, startx);
-    box(win, 0, 0);
-    mvwprintw(win, 1, 3, "%s", text(Text::Loading));
-    wrefresh(win);
-    while (loading) {
-        for (int y = 0; y < 3; ++y) {
-            for (int x = 0; x < 3; ++x) {
-                char c = frames[frame][y*3 + x];
-                chtype ch = (c == 'x') ? ACS_DIAMOND : ' ';
-                mvwaddch(win, 3 + y, 4 + x * 2, ch);
-                mvwaddch(win, 3 + y, 4 + x * 2 + 1, ' ');
-            }
-        }
-        wrefresh(win);
-        std::this_thread::sleep_for(std::chrono::milliseconds(delay));
-        frame = (frame + 1) % num_frames;
-    }
-    delwin(win);
 }

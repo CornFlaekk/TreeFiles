@@ -8,6 +8,7 @@
 #include <set>
 #include <cstdlib>
 #include <algorithm>
+#include <unordered_map>
 
 namespace fs = std::filesystem;
 
@@ -168,6 +169,77 @@ void test_alphabetic_tiebreaker() {
     cleanup();
 }
 
+void test_large_files_are_counted_and_propagated() {
+    TEST("logical sizes above 1 TiB are counted, cached and sorted through nested directories");
+    setup();
+    const std::uintmax_t tib = std::uintmax_t{1} << 40;
+    const std::vector<std::pair<std::string, std::uintmax_t>> files = {
+        {"below.bin", tib - 1},
+        {"exact.bin", tib},
+        {"above.bin", tib + 1},
+        {"large.bin", tib + 17}
+    };
+    std::unordered_map<fs::path, std::uintmax_t> sizes;
+    for (const auto& file : files) {
+        const fs::path path = BASE / "dir_a" / "sub" / file.first;
+        std::ofstream output(path, std::ios::binary);
+        CHECK(static_cast<bool>(output));
+        output << 'x';
+        sizes[path.lexically_normal()] = file.second;
+    }
+    const fs::path sibling = BASE / "dir_a" / "sibling.bin";
+    { std::ofstream output(sibling, std::ios::binary); CHECK(static_cast<bool>(output)); output << 'x'; }
+    sizes[sibling.lexically_normal()] = 32;
+
+    clear_dir_size_cache();
+    reset_resto_state();
+    auto& expanded = get_expanded_dirs();
+    expanded.clear();
+    expanded.insert(BASE / "dir_a");
+    expanded.insert(BASE / "dir_a" / "sub");
+    const FileSizeReader reader = [&sizes](const fs::path& path) {
+        auto found = sizes.find(path.lexically_normal());
+        return found == sizes.end() ? fs::file_size(path) : found->second;
+    };
+    std::vector<EntryInfo> entries;
+    build_tree_entries(BASE, expanded, entries, 0, 30, reader);
+
+    auto entry_named = [&entries](const std::string& name, int depth) -> const EntryInfo* {
+        auto found = std::find_if(entries.begin(), entries.end(), [&](const EntryInfo& entry) {
+            return entry.name == name && entry.depth == depth;
+        });
+        return found == entries.end() ? nullptr : &*found;
+    };
+    CHECK(entry_named("below.bin", 2) && entry_named("below.bin", 2)->size == tib - 1);
+    CHECK(entry_named("exact.bin", 2) && entry_named("exact.bin", 2)->size == tib);
+    CHECK(entry_named("above.bin", 2) && entry_named("above.bin", 2)->size == tib + 1);
+    const std::uintmax_t nested_total = tib * 4 + 17;
+    const std::uintmax_t parent_total = tib * 4 + 49;
+    CHECK(entry_named("sub", 1) && entry_named("sub", 1)->size == nested_total);
+    CHECK(entry_named("dir_a", 0) && entry_named("dir_a", 0)->size == parent_total);
+    CHECK(entry_named("dir_a", 0)->size > entry_named("dir_b", 0)->size);
+    CHECK(entry_named("dir_a", 0) == &entries.front());
+
+    std::vector<EntryInfo> cached_entries;
+    build_tree_entries(BASE, expanded, cached_entries, 0, 30, reader);
+    auto cached_parent = std::find_if(cached_entries.begin(), cached_entries.end(), [](const EntryInfo& entry) {
+        return entry.name == "dir_a" && entry.depth == 0;
+    });
+    CHECK(cached_parent != cached_entries.end() && cached_parent->size == parent_total);
+
+    sizes[sibling.lexically_normal()] = 64;
+    clear_dir_size_cache();
+    std::vector<EntryInfo> invalidated_entries;
+    build_tree_entries(BASE, expanded, invalidated_entries, 0, 30, reader);
+    auto recalculated_parent = std::find_if(invalidated_entries.begin(), invalidated_entries.end(), [](const EntryInfo& entry) {
+        return entry.name == "dir_a" && entry.depth == 0;
+    });
+    CHECK(recalculated_parent != invalidated_entries.end() && recalculated_parent->size == parent_total + 32);
+    PASS();
+    cleanup();
+    clear_dir_size_cache();
+}
+
 int main() {
     printf("test_build_tree\n");
     cleanup();
@@ -176,6 +248,7 @@ int main() {
     test_expanded_directories();
     test_depth_increases_for_children();
     test_alphabetic_tiebreaker();
+    test_large_files_are_counted_and_propagated();
     cleanup();
     printf("  %d run, %d failed\n", tests_run, tests_failed);
     return tests_failed > 0 ? 1 : 0;

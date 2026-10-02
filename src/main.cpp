@@ -16,10 +16,11 @@
 #include <sstream>
 #include <iostream>
 #include <chrono>
-#include <thread>
-#include <atomic>
 #include <charconv>
 #include <array>
+#include <algorithm>
+#include "scan_controller.h"
+#include <iomanip>
 
 static short curses_color(int index) {
     // PDCurses and ncurses assign different numeric values to the same colors.
@@ -30,19 +31,52 @@ static short curses_color(int index) {
     return colors.at(static_cast<size_t>(index));
 }
 
+static const char* scan_status_name(ScanStatus status) {
+    switch (status) {
+        case ScanStatus::complete: return "complete";
+        case ScanStatus::partial: return "partial";
+        case ScanStatus::cancelled: return "cancelled";
+        case ScanStatus::failed: return "failed";
+    }
+    return "failed";
+}
+
+static const char* size_status_name(SizeStatus status) {
+    switch (status) {
+        case SizeStatus::complete: return "complete";
+        case SizeStatus::partial: return "partial";
+        case SizeStatus::unavailable: return "unavailable";
+    }
+    return "unavailable";
+}
+
 static void headless_dump_frame(const std::vector<EntryInfo>& entries, int selected,
                                 int scroll_offset, int visible_rows,
                                 const std::filesystem::path& current_path,
                                 const std::set<std::filesystem::path>& expanded_dirs,
                                 double last_scan_ms,
                                 int bar_fg, int bar_bg, int frame_num,
-                                int total_pages, int current_page, int page_size) {
+                                int total_pages, int current_page, int page_size,
+                                const ScanResult& scan_result,
+                                const std::string& async_scan_state,
+                                const ScanActivity& async_activity) {
     std::cout << "=== FRAME " << frame_num << " ===" << std::endl;
     std::cout << "current_path: " << current_path.u8string() << std::endl;
     std::cout << "selected_index: " << selected << std::endl;
     std::cout << "scroll_offset: " << scroll_offset << std::endl;
     std::cout << "visible_rows: " << visible_rows << std::endl;
     std::cout << "page_size: " << page_size << std::endl;
+    std::cout << "async_scan_state: " << async_scan_state << std::endl;
+    std::cout << "async_scan_root: " << (async_activity.busy
+        ? async_activity.latest_root.u8string() : std::string()) << std::endl;
+    std::cout << "scan_progress_entries: " << (async_activity.busy
+        ? async_activity.progress.entries_processed : scan_result.progress.entries_processed) << std::endl;
+    std::cout << "scan_progress_directories: " << (async_activity.busy
+        ? async_activity.progress.directories_processed : scan_result.progress.directories_processed) << std::endl;
+    std::cout << "scan_progress_bytes: " << (async_activity.busy
+        ? async_activity.progress.bytes_processed : scan_result.progress.bytes_processed) << std::endl;
+    std::cout << "scan_progress_elapsed_seconds: " << (async_activity.busy
+        ? async_activity.elapsed_seconds : last_scan_ms / 1000.0) << std::endl;
     std::cout << "language: " << language_code() << std::endl;
     std::cout << "total_entries: " << entries.size() << std::endl;
     if (total_pages > 1) {
@@ -59,6 +93,14 @@ static void headless_dump_frame(const std::vector<EntryInfo>& entries, int selec
     std::cout << "}" << std::endl;
 
     std::cout << "last_scan_ms: " << last_scan_ms << std::endl;
+    std::cout << "scan_status: " << scan_status_name(scan_result.status) << std::endl;
+    std::cout << "diagnostics_count: " << scan_result.diagnostics.size() << std::endl;
+    for (size_t i = 0; i < scan_result.diagnostics.size(); ++i) {
+        const auto& issue = scan_result.diagnostics[i];
+        std::cout << "diagnostic_" << i << ": path=" << issue.path.u8string()
+                  << " operation=" << issue.operation << " error_code=" << issue.error.value()
+                  << " message=" << issue.error.message() << std::endl;
+    }
     std::cout << "bar_fg: " << bar_fg << std::endl;
     std::cout << "bar_bg: " << bar_bg << std::endl;
 
@@ -110,7 +152,8 @@ static void headless_dump_frame(const std::vector<EntryInfo>& entries, int selec
 
             std::cout << "  " << i << ": " << marker << " " << indent
                       << e.type << " " << e.name
-                      << "  " << size_str << "  (" << pct_buf << ") " << bar << std::endl;
+                      << "  " << size_str << "  (" << pct_buf << ") " << bar
+                      << "  size_status=" << size_status_name(e.size_status) << std::endl;
         }
     }
     std::cout << "=== END FRAME ===" << std::endl;
@@ -125,6 +168,12 @@ static int parse_headless_event(const std::string& line) {
     if (line == "DELETE")      return KEY_DC;
     if (line == "CTRL_H")      return 8;
     if (line == "ENTER")       return '\n';
+    if (line == "REFRESH")     return 0x10001;
+    if (line.rfind("CD ", 0) == 0) return 0x10002;
+    if (line == "SCAN_START") return 0x10007;
+    if (line == "CANCEL_SCAN") return 0x10008;
+    if (line == "WAIT_SCAN") return 0x10009;
+    if (line == "BACKSPACE")   return KEY_BACKSPACE;
     if (line.rfind("COLOR ", 0) == 0) return 0x10000;
     if (line.size() == 1)      return line[0];
     return -1;
@@ -202,6 +251,130 @@ static bool collapse_selected_directory(const std::vector<EntryInfo>& entries, i
     return false;
 }
 
+static ScanResult rebuild_tree_preserving_selection(
+    const std::filesystem::path& current_path,
+    std::set<std::filesystem::path>& expanded_dirs,
+    int page_size,
+    std::vector<EntryInfo>& entries,
+    int& selected,
+    bool invalidate_sizes) {
+    std::filesystem::path selected_path;
+    if (invalidate_sizes && selected >= 0 && selected < static_cast<int>(entries.size()) &&
+        entries[selected].type != "[RESTO_NEXT]" && entries[selected].type != "[RESTO_PREV]")
+        selected_path = entries[selected].full_path;
+
+    if (invalidate_sizes) {
+        clear_dir_size_cache();
+        prune_tree_state(expanded_dirs);
+    }
+    auto result = scan_tree_entries(current_path, expanded_dirs, page_size);
+    entries = result.entries;
+    if (invalidate_sizes && !selected_path.empty()) {
+        auto restored = std::find_if(entries.begin(), entries.end(), [&](const EntryInfo& entry) {
+            return entry.full_path == selected_path &&
+                   entry.type != "[RESTO_NEXT]" && entry.type != "[RESTO_PREV]";
+        });
+        if (restored != entries.end()) selected = static_cast<int>(restored - entries.begin());
+    }
+    if (invalidate_sizes) {
+        int nearest = -1;
+        int nearest_distance = static_cast<int>(entries.size()) + 1;
+        for (int index = 0; index < static_cast<int>(entries.size()); ++index) {
+            if (entries[index].type == "[RESTO_NEXT]" || entries[index].type == "[RESTO_PREV]") continue;
+            const int distance = index > selected ? index - selected : selected - index;
+            if (distance < nearest_distance) {
+                nearest = index;
+                nearest_distance = distance;
+            }
+        }
+        selected = nearest >= 0 ? nearest : 0;
+    }
+    return result;
+}
+
+static bool resolve_directory_root(const std::filesystem::path& requested_path,
+                                   const std::filesystem::path& current_path,
+                                   std::filesystem::path& candidate,
+                                   std::string& error_message) {
+    namespace fs = std::filesystem;
+    candidate = requested_path.is_absolute() ? requested_path : current_path / requested_path;
+    std::error_code error;
+    candidate = fs::canonical(candidate, error);
+    if (error) {
+        error_message = error.message();
+        return false;
+    }
+    if (!fs::is_directory(candidate, error) || error) {
+        error_message = error ? error.message()
+            : std::make_error_code(std::errc::not_a_directory).message();
+        return false;
+    }
+    return true;
+}
+
+static bool navigate_to_root(const std::filesystem::path& requested_path,
+                             std::filesystem::path& current_path,
+                             std::set<std::filesystem::path>& expanded_dirs,
+                             int page_size, std::vector<EntryInfo>& entries,
+                             ScanResult& scan_result, int& selected, int& scroll_offset,
+                             int visible_rows, double& last_scan_ms,
+                             const std::filesystem::path& select_on_return,
+                             std::string& error_message) {
+    namespace fs = std::filesystem;
+    fs::path candidate;
+    if (!resolve_directory_root(requested_path, current_path, candidate, error_message)) return false;
+
+    clear_dir_size_cache();
+    ScanOptions options;
+    options.reset_pagination = true;
+    const auto started = std::chrono::steady_clock::now();
+    auto next_scan = scan_tree_entries(candidate, {}, page_size, options);
+    last_scan_ms = std::chrono::duration<double, std::milli>(
+        std::chrono::steady_clock::now() - started).count();
+    if (next_scan.status == ScanStatus::failed) {
+        error_message = next_scan.diagnostics.empty()
+            ? std::make_error_code(std::errc::io_error).message()
+            : next_scan.diagnostics.front().error.message();
+        return false;
+    }
+
+    current_path = candidate;
+    expanded_dirs.clear();
+    reset_resto_state();
+    entries = next_scan.entries;
+    scan_result = std::move(next_scan);
+    selected = 0;
+    if (!select_on_return.empty()) {
+        auto returned_directory = std::find_if(entries.begin(), entries.end(), [&](const EntryInfo& entry) {
+            return entry.full_path == select_on_return && entry.type == "[DIR] ";
+        });
+        if (returned_directory != entries.end())
+            selected = static_cast<int>(returned_directory - entries.begin());
+    }
+    if (entries.empty()) selected = 0;
+    scroll_offset = 0;
+    update_scroll(selected, scroll_offset, visible_rows);
+    return true;
+}
+
+static bool navigate_to_parent(std::filesystem::path& current_path,
+                               std::set<std::filesystem::path>& expanded_dirs,
+                               int page_size, std::vector<EntryInfo>& entries,
+                               ScanResult& scan_result, int& selected, int& scroll_offset,
+                               int visible_rows, double& last_scan_ms,
+                               std::string& error_message) {
+    namespace fs = std::filesystem;
+    std::error_code error;
+    const fs::path absolute_path = fs::absolute(current_path, error).lexically_normal();
+    if (error) { error_message = error.message(); return false; }
+    if (absolute_path == absolute_path.root_path()) return false;
+    const fs::path parent = absolute_path.parent_path();
+    if (parent.empty() || parent == absolute_path) return false;
+    return navigate_to_root(parent, current_path, expanded_dirs, page_size, entries,
+        scan_result, selected, scroll_offset, visible_rows, last_scan_ms,
+        absolute_path, error_message);
+}
+
 int main(int argc, char* argv[]) {
     ConsoleEncoding console_encoding;
     bool headless = false;
@@ -265,6 +438,16 @@ int main(int argc, char* argv[]) {
         std::cerr << text(Text::UnreadableDirectory) << start_path.u8string() << std::endl;
         return 1;
     }
+    if (!path_error && (is_directory_link(start_path) ||
+        std::filesystem::is_symlink(std::filesystem::symlink_status(start_path, path_error)))) {
+        const auto requested_path = start_path;
+        start_path = std::filesystem::canonical(requested_path, path_error);
+        if (path_error) {
+            std::cerr << text(Text::UnreadableDirectory) << requested_path.u8string() << ": "
+                      << path_error.message() << std::endl;
+            return 1;
+        }
+    }
 
     const auto config_path = configuration_file();
     std::string config_error;
@@ -284,17 +467,89 @@ int main(int argc, char* argv[]) {
         std::filesystem::path current_path = start_path;
         auto& expanded_dirs = get_expanded_dirs();
         double last_scan_ms = 0.0;
+        ScanResult scan_result;
 
         std::vector<EntryInfo> entries;
         bool need_refresh = true;
+        bool refresh_next_scan = false;
         std::filesystem::path select_first_owner;
         std::filesystem::path select_last_owner;
         int frame_num = 0;
+        ScanController async_scans;
+        std::uint64_t headless_generation = 0;
+        std::filesystem::path headless_scan_target = current_path;
+        std::set<std::filesystem::path> headless_scan_expanded;
+        std::filesystem::path headless_return_directory;
+        std::string headless_scan_state = "idle";
 
-        auto rebuild_tree = [&]() {
-            entries.clear();
+        auto queue_async_scan = [&](const std::filesystem::path& root,
+                                    const std::set<std::filesystem::path>& scan_expanded,
+                                    bool reset_pages, bool invalidate_sizes,
+                                    const std::filesystem::path& return_directory) {
+            if (invalidate_sizes) clear_dir_size_cache();
+            ScanOptions options;
+            options.reset_pagination = reset_pages;
+            options.pagination_pages = reset_pages
+                ? std::map<std::filesystem::path, int>{} : snapshot_resto_state();
+            headless_generation = async_scans.start(root, scan_expanded, page_size, std::move(options));
+            headless_scan_target = root;
+            headless_scan_expanded = scan_expanded;
+            headless_return_directory = return_directory;
+            headless_scan_state = "running";
+            need_refresh = false;
+            refresh_next_scan = false;
+        };
+
+        auto queue_root_scan = [&](const std::filesystem::path& requested_path,
+                                   const std::filesystem::path& return_directory,
+                                   std::string& error) {
+            std::filesystem::path candidate;
+            if (!resolve_directory_root(requested_path, current_path, candidate, error)) return false;
+            queue_async_scan(candidate, {}, true, true, return_directory);
+            return true;
+        };
+
+        auto publish_async_completions = [&](std::vector<ScanCompletion> completions) {
+            for (auto& completion : completions) {
+                if (completion.generation != headless_generation ||
+                    completion.generation != async_scans.latest_generation()) continue;
+                if (completion.result.status == ScanStatus::cancelled) {
+                    headless_scan_state = "cancelled";
+                    continue;
+                }
+                if (completion.result.status == ScanStatus::failed) {
+                    headless_scan_state = "failed";
+                    continue;
+                }
+                const bool same_root = completion.root == current_path;
+                const int prior_selection = selected;
+                commit_scan_cache(completion.result);
+                restore_resto_state(completion.result.pagination_pages);
+                entries = std::move(completion.result.entries);
+                scan_result = std::move(completion.result);
+                current_path = std::move(completion.root);
+                expanded_dirs = std::move(completion.expanded_dirs);
+                last_scan_ms = completion.elapsed_ms;
+                selected = same_root ? prior_selection : 0;
+                if (!headless_return_directory.empty()) {
+                    const auto returned = std::find_if(entries.begin(), entries.end(), [&](const EntryInfo& entry) {
+                        return entry.type == "[DIR] " && entry.full_path == headless_return_directory;
+                    });
+                    if (returned != entries.end()) selected = static_cast<int>(returned - entries.begin());
+                }
+                headless_return_directory.clear();
+                headless_scan_target = current_path;
+                headless_scan_expanded = expanded_dirs;
+                headless_scan_state = scan_status_name(scan_result.status);
+                clamp_and_skip_selection(entries, selected, select_first_owner, select_last_owner);
+                update_scroll(selected, scroll_offset, visible_rows);
+            }
+        };
+
+        auto rebuild_tree = [&](bool invalidate_sizes = false) {
             auto t0 = std::chrono::high_resolution_clock::now();
-            build_tree_entries(current_path, expanded_dirs, entries, 0, page_size);
+            scan_result = rebuild_tree_preserving_selection(current_path, expanded_dirs,
+                page_size, entries, selected, invalidate_sizes);
             auto t1 = std::chrono::high_resolution_clock::now();
             last_scan_ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
             need_refresh = false;
@@ -316,13 +571,24 @@ int main(int argc, char* argv[]) {
             }
         };
 
+        auto dump_current_frame = [&]() {
+            int total_pages = 1, current_page = 0;
+            get_page_info(total_pages, current_page);
+            headless_dump_frame(entries, selected, scroll_offset, visible_rows,
+                                current_path, expanded_dirs, last_scan_ms,
+                                bar_fg, bar_bg, frame_num, total_pages, current_page, page_size,
+                                scan_result, headless_scan_state, async_scans.activity());
+            ++frame_num;
+        };
+
         rebuild_tree();
-        int total_pages = 1, current_page = 0;
-        get_page_info(total_pages, current_page);
-        headless_dump_frame(entries, selected, scroll_offset, visible_rows,
-                            current_path, expanded_dirs, last_scan_ms,
-                            bar_fg, bar_bg, frame_num, total_pages, current_page, page_size);
-        frame_num++;
+        if (scan_result.status == ScanStatus::failed) {
+            std::cerr << text(Text::UnreadableDirectory) << current_path.u8string() << std::endl;
+            for (const auto& issue : scan_result.diagnostics)
+                std::cerr << issue.path.u8string() << ": " << issue.error.message() << std::endl;
+            return 1;
+        }
+        dump_current_frame();
 
         std::string event_line;
         while (running && std::getline(std::cin, event_line)) {
@@ -334,14 +600,134 @@ int main(int argc, char* argv[]) {
                 continue;
 
             if (need_refresh)
-                rebuild_tree();
+                rebuild_tree(refresh_next_scan);
+            refresh_next_scan = false;
+            if (scan_result.status == ScanStatus::failed) {
+                std::cerr << text(Text::UnreadableDirectory) << current_path.u8string() << std::endl;
+                for (const auto& issue : scan_result.diagnostics)
+                    std::cerr << issue.path.u8string() << ": " << issue.error.message() << std::endl;
+                return 1;
+            }
 
             bool popup_handled = false;
 
             switch (input) {
             case 'q':
             case 'Q':
+                if (async_scans.busy()) {
+                    async_scans.cancel();
+                    headless_scan_state = "cancelling";
+                }
                 running = false;
+                break;
+            case 'r':
+            case 'R':
+            case 0x10001:
+                if (async_scans.busy()) {
+                    queue_async_scan(headless_scan_target, headless_scan_expanded,
+                                     false, true, headless_return_directory);
+                } else {
+                    need_refresh = true;
+                    refresh_next_scan = true;
+                }
+                break;
+            case '\n':
+                if (!entries.empty() && selected >= 0 && selected < static_cast<int>(entries.size())) {
+                    const auto entry = entries[selected];
+                    if (entry.type == "[DIR] ") {
+                        std::string error;
+                        if (async_scans.busy()) {
+                            if (!queue_root_scan(entry.full_path, {}, error)) {
+                                std::cout << "=== POPUP navigation_error ===\nmessage: "
+                                          << text(Text::NavigationError) << error
+                                          << "\n=== END POPUP ===\n";
+                                popup_handled = true;
+                            }
+                        } else if (!navigate_to_root(entry.full_path, current_path, expanded_dirs, page_size,
+                            entries, scan_result, selected, scroll_offset, visible_rows, last_scan_ms,
+                            {}, error)) {
+                            std::cout << "=== POPUP navigation_error ===\nmessage: "
+                                      << text(Text::NavigationError) << error
+                                      << "\n=== END POPUP ===\n";
+                            popup_handled = true;
+                        } else {
+                            headless_scan_target = current_path;
+                            headless_scan_expanded = expanded_dirs;
+                        }
+                    } else if (entry.type == "[RESTO_NEXT]") {
+                        expand_resto(entry.full_path);
+                        need_refresh = true;
+                        select_first_owner = entry.full_path;
+                    } else if (entry.type == "[RESTO_PREV]") {
+                        prev_resto(entry.full_path);
+                        need_refresh = true;
+                        select_last_owner = entry.full_path;
+                    }
+                }
+                break;
+            case KEY_BACKSPACE:
+            case 8:
+            case 127: {
+                std::string error;
+                if (async_scans.busy()) {
+                    const auto parent = current_path.parent_path();
+                    if (parent.empty() || parent == current_path ||
+                        !queue_root_scan(parent, current_path, error)) {
+                        if (!error.empty()) {
+                            std::cout << "=== POPUP navigation_error ===\nmessage: "
+                                      << text(Text::NavigationError) << error
+                                      << "\n=== END POPUP ===\n";
+                            popup_handled = true;
+                        }
+                    }
+                } else if (!navigate_to_parent(current_path, expanded_dirs, page_size, entries,
+                    scan_result, selected, scroll_offset, visible_rows, last_scan_ms, error) &&
+                    !error.empty()) {
+                    std::cout << "=== POPUP navigation_error ===\nmessage: "
+                              << text(Text::NavigationError) << error
+                              << "\n=== END POPUP ===\n";
+                    popup_handled = true;
+                }
+                break;
+            }
+            case 0x10002: {
+                const std::string value = event_line.size() > 3 ? event_line.substr(3) : std::string();
+                std::string error;
+                if (async_scans.busy()) {
+                    if (value.empty() || !queue_root_scan(std::filesystem::u8path(value), {}, error)) {
+                        if (error.empty()) error = std::make_error_code(std::errc::invalid_argument).message();
+                        std::cout << "=== POPUP navigation_error ===\nmessage: "
+                                  << text(Text::NavigationError) << error
+                                  << "\n=== END POPUP ===\n";
+                        popup_handled = true;
+                    }
+                } else if (value.empty() || !navigate_to_root(std::filesystem::u8path(value), current_path,
+                    expanded_dirs, page_size, entries, scan_result, selected, scroll_offset,
+                    visible_rows, last_scan_ms, {}, error)) {
+                    if (error.empty()) error = std::make_error_code(std::errc::invalid_argument).message();
+                    std::cout << "=== POPUP navigation_error ===\nmessage: "
+                              << text(Text::NavigationError) << error
+                              << "\n=== END POPUP ===\n";
+                    popup_handled = true;
+                } else {
+                    headless_scan_target = current_path;
+                    headless_scan_expanded = expanded_dirs;
+                }
+                break;
+            }
+            case 0x10007:
+                queue_async_scan(headless_scan_target, headless_scan_expanded,
+                                 false, false, headless_return_directory);
+                break;
+            case 0x10008:
+                headless_scan_state = async_scans.cancel() ? "cancelling" : "cancelled";
+                headless_return_directory.clear();
+                headless_scan_target = current_path;
+                headless_scan_expanded = expanded_dirs;
+                break;
+            case 0x10009:
+                publish_async_completions(async_scans.wait_until_idle());
+                if (headless_scan_state == "cancelling") headless_scan_state = "cancelled";
                 break;
             case KEY_UP:
             case 'k':
@@ -425,7 +811,7 @@ int main(int argc, char* argv[]) {
                 }
                 break;
             case KEY_DC:
-                if (!entries.empty()) {
+                if (!async_scans.busy() && !entries.empty()) {
                     const auto& entry = entries[selected];
                     if (entry.type == "[RESTO_PREV]" || entry.type == "[RESTO_NEXT]")
                         break;
@@ -443,7 +829,6 @@ int main(int argc, char* argv[]) {
                             } else {
                                 std::filesystem::remove(entry.full_path);
                             }
-                            clear_dir_size_cache();
                             std::cout << "=== ACTION deleted ===" << std::endl;
                             std::cout << "path: " << entry.full_path.u8string() << std::endl;
                             std::cout << "=== END ACTION ===" << std::endl;
@@ -453,6 +838,7 @@ int main(int argc, char* argv[]) {
                             std::cout << "=== END POPUP ===" << std::endl;
                         }
                         need_refresh = true;
+                        refresh_next_scan = true;
                     } else {
                         std::cout << "=== ACTION cancel_delete ===" << std::endl;
                         std::cout << "=== END ACTION ===" << std::endl;
@@ -465,6 +851,17 @@ int main(int argc, char* argv[]) {
                 std::cout << "=== POPUP bar_color ===" << std::endl;
                 std::cout << "colors: black, red, green, yellow, blue, magenta, cyan, white"
                           << std::endl;
+                std::cout << "=== END POPUP ===" << std::endl;
+                popup_handled = true;
+                break;
+            case 'w':
+            case 'W':
+                std::cout << "=== POPUP scan_diagnostics ===" << std::endl;
+                std::cout << "scan_status: " << scan_status_name(scan_result.status) << std::endl;
+                for (const auto& issue : scan_result.diagnostics)
+                    std::cout << "path: " << issue.path.u8string() << " operation: "
+                              << issue.operation << " error_code: " << issue.error.value()
+                              << " message: " << issue.error.message() << std::endl;
                 std::cout << "=== END POPUP ===" << std::endl;
                 popup_handled = true;
                 break;
@@ -491,16 +888,20 @@ int main(int argc, char* argv[]) {
             }
 
             if (!popup_handled || need_refresh) {
-                if (need_refresh)
-                    rebuild_tree();
+                if (need_refresh) {
+                    if (async_scans.busy()) {
+                        queue_async_scan(current_path, expanded_dirs, false,
+                                         refresh_next_scan, {});
+                    } else {
+                        rebuild_tree(refresh_next_scan);
+                        headless_scan_target = current_path;
+                        headless_scan_expanded = expanded_dirs;
+                    }
+                }
+                refresh_next_scan = false;
                 clamp_and_skip_selection(entries, selected, select_first_owner, select_last_owner);
                 update_scroll(selected, scroll_offset, visible_rows);
-                int tp = 1, cp = 0;
-                get_page_info(tp, cp);
-                headless_dump_frame(entries, selected, scroll_offset, visible_rows,
-                                    current_path, expanded_dirs, last_scan_ms,
-                                    bar_fg, bar_bg, frame_num, tp, cp, page_size);
-                frame_num++;
+                dump_current_frame();
             }
         }
         return 0;
@@ -528,61 +929,113 @@ int main(int argc, char* argv[]) {
     refresh();
 
     bool running = true;
-    int input;
+    int input = ERR;
     int selected = 0;
     int scroll_offset = 0;
     int rows, cols;
     getmaxyx(stdscr, rows, cols);
-    int visible_rows = rows - 1 - footer_height(cols);
+    int visible_rows = std::max(1, rows - 1 - footer_height(cols));
 
     std::filesystem::path current_path = start_path;
     auto& expanded_dirs = get_expanded_dirs();
     double last_scan_ms = 0.0;
-    std::atomic<bool> loading(false);
-    std::atomic<bool> anim_started(false);
+    ScanResult scan_result;
+    ScanController async_scans;
+    std::uint64_t ui_generation = 0;
+    std::filesystem::path intent_root = current_path;
+    std::set<std::filesystem::path> intent_expanded;
+    std::filesystem::path intent_return_directory;
+    bool intent_reset_pages = false;
+    std::string scan_notice;
+    bool has_snapshot = false;
 
     int total_pages = 1;
     int current_page = 0;
 
     std::vector<EntryInfo> entries;
-    bool need_refresh = true;
+    bool need_refresh = false;
+    bool refresh_next_scan = false;
     std::filesystem::path select_first_owner;
     std::filesystem::path select_last_owner;
-    while (running) {
+
+    auto request_scan = [&](const std::filesystem::path& root,
+                            const std::set<std::filesystem::path>& scan_expanded,
+                            bool reset_pages, bool invalidate_sizes,
+                            const std::filesystem::path& return_directory) {
+        if (invalidate_sizes) clear_dir_size_cache();
+        ScanOptions options;
+        options.reset_pagination = reset_pages;
+        options.pagination_pages = reset_pages
+            ? std::map<std::filesystem::path, int>{} : snapshot_resto_state();
+        ui_generation = async_scans.start(root, scan_expanded, page_size, std::move(options));
+        intent_root = root;
+        intent_expanded = scan_expanded;
+        intent_return_directory = return_directory;
+        intent_reset_pages = reset_pages;
+        scan_notice.clear();
+        need_refresh = false;
+        refresh_next_scan = false;
+    };
+
+    request_scan(current_path, expanded_dirs, false, false, {});
+    while (running || async_scans.busy()) {
+        auto completions = async_scans.poll();
+        for (auto& completion : completions) {
+            if (completion.generation != ui_generation ||
+                completion.generation != async_scans.latest_generation()) continue;
+            if (completion.result.status == ScanStatus::cancelled) {
+                scan_notice = text(Text::ScanCancelledStatus);
+                continue;
+            }
+            if (completion.result.status == ScanStatus::failed) {
+                scan_notice = text(Text::ScanFailedStatus);
+                if (!completion.result.diagnostics.empty()) show_scan_diagnostics(completion.result);
+                continue;
+            }
+
+            std::filesystem::path selected_path;
+            if (completion.root == current_path && selected >= 0 &&
+                selected < static_cast<int>(entries.size()) &&
+                entries[selected].type != "[RESTO_NEXT]" &&
+                entries[selected].type != "[RESTO_PREV]")
+                selected_path = entries[selected].full_path;
+
+            commit_scan_cache(completion.result);
+            restore_resto_state(completion.result.pagination_pages);
+            entries = std::move(completion.result.entries);
+            scan_result = std::move(completion.result);
+            current_path = std::move(completion.root);
+            expanded_dirs = std::move(completion.expanded_dirs);
+            last_scan_ms = completion.elapsed_ms;
+            has_snapshot = true;
+            selected = 0;
+            const auto target_selection = !intent_return_directory.empty()
+                ? intent_return_directory : selected_path;
+            if (!target_selection.empty()) {
+                const auto restored = std::find_if(entries.begin(), entries.end(), [&](const EntryInfo& entry) {
+                    return entry.type != "[RESTO_NEXT]" && entry.type != "[RESTO_PREV]" &&
+                           entry.full_path == target_selection;
+                });
+                if (restored != entries.end()) selected = static_cast<int>(restored - entries.begin());
+            }
+            intent_return_directory.clear();
+            intent_root = current_path;
+            intent_expanded = expanded_dirs;
+            clamp_and_skip_selection(entries, selected, select_first_owner, select_last_owner);
+            scan_notice.clear();
+        }
+        if (!async_scans.busy() && scan_notice == text(Text::ScanCancelling))
+            scan_notice = text(Text::ScanCancelledStatus);
+
         clear();
         getmaxyx(stdscr, rows, cols);
-        visible_rows = rows - 1 - footer_height(cols);
-        if (visible_rows < 1) visible_rows = 1;
+        const auto activity = async_scans.activity();
+        const bool show_scan_line = activity.busy || !scan_notice.empty();
+        const int list_start_row = show_scan_line ? 2 : 1;
+        visible_rows = std::max(1, rows - 1 - footer_height(cols) - (show_scan_line ? 1 : 0));
         if (need_refresh) {
-            loading = true;
-            anim_started = false;
-            std::thread loader([&]() {
-                entries.clear();
-                auto t0 = std::chrono::high_resolution_clock::now();
-                build_tree_entries(current_path, expanded_dirs, entries, 0, page_size);
-                auto t1 = std::chrono::high_resolution_clock::now();
-                last_scan_ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
-                loading = false;
-            });
-            int waited = 0;
-            int anim_delay = 120;
-            while (loading && waited < 500) {
-                std::this_thread::sleep_for(std::chrono::milliseconds(anim_delay));
-                waited += anim_delay;
-            }
-            std::thread anim;
-            if (loading) {
-                anim = std::thread([&]() {
-                    show_loading_animation(loading, anim_started);
-                });
-            }
-            loader.join();
-            loading = false;
-            if (anim.joinable()) anim.join();
-            if (anim_started) {
-                std::this_thread::sleep_for(std::chrono::milliseconds(80));
-            }
-            need_refresh = false;
+            const bool invalidate_sizes = refresh_next_scan;
+            request_scan(current_path, expanded_dirs, false, invalidate_sizes, {});
         }
         clamp_and_skip_selection(entries, selected, select_first_owner, select_last_owner);
         update_scroll(selected, scroll_offset, visible_rows);
@@ -603,15 +1056,125 @@ int main(int argc, char* argv[]) {
 
         clear();
         draw_header(cols, current_path, current_page, total_pages);
-        print_directory_entries(entries, selected, scroll_offset, visible_rows, (int)entries.size(), 1, 2);
-        draw_footer(rows, cols, selected, (int)entries.size(), last_scan_ms);
+        if (show_scan_line) {
+            std::ostringstream status;
+            if (activity.busy) {
+                const bool replacing = activity.latest_root != activity.active_root;
+                status << text(replacing ? Text::ScanReplacing
+                                         : activity.cancelling ? Text::ScanCancelling : Text::ScanRunning)
+                       << " | " << activity.progress.directories_processed << " " << text(Text::ScanDirectories)
+                       << ", " << activity.progress.entries_processed << " " << text(Text::ScanEntries)
+                       << ", " << activity.progress.bytes_processed << " " << text(Text::ScanBytes)
+                       << ", " << std::fixed << std::setprecision(1) << activity.elapsed_seconds << "s"
+                       << " | " << activity.active_root.u8string();
+                if (replacing) status << " -> " << activity.latest_root.u8string();
+                if (has_snapshot && activity.latest_root != current_path)
+                    status << " | " << text(Text::ScanShowingSnapshot) << ": " << current_path.u8string();
+                status << " | " << text(Text::ScanActionsDisabled);
+            } else {
+                status << scan_notice;
+            }
+            draw_scan_status(1, cols, status.str());
+        }
+        print_directory_entries(entries, selected, scroll_offset, visible_rows,
+                                static_cast<int>(entries.size()), list_start_row, 2);
+        draw_footer(rows, cols, selected, (int)entries.size(), last_scan_ms,
+                    !scan_result.diagnostics.empty());
         refresh();
+        if (!running && !async_scans.busy()) break;
+        wtimeout(stdscr, async_scans.busy() ? 100 : -1);
         input = getch();
+        if (input == ERR || !running) continue;
         switch (input) {
             case 'q':
             case 'Q':
                 running = false;
+                if (async_scans.busy()) {
+                    async_scans.cancel();
+                    scan_notice = text(Text::ScanCancelling);
+                }
                 break;
+            case 'r':
+            case 'R':
+                if (async_scans.busy()) {
+                    request_scan(intent_root, intent_expanded, intent_reset_pages, true, intent_return_directory);
+                } else {
+                    need_refresh = true;
+                    refresh_next_scan = true;
+                }
+                break;
+            case 27:
+                if (async_scans.busy()) {
+                    async_scans.cancel();
+                    scan_notice = text(Text::ScanCancelling);
+                    intent_return_directory.clear();
+                    intent_root = current_path;
+                    intent_expanded = expanded_dirs;
+                    intent_reset_pages = false;
+                }
+                break;
+            case '\n':
+            case KEY_ENTER:
+                if (!entries.empty() && selected >= 0 && selected < static_cast<int>(entries.size())) {
+                    const auto entry = entries[selected];
+                    if (entry.type == "[DIR] ") {
+                        std::string error;
+                        std::filesystem::path target;
+                        if (!resolve_directory_root(entry.full_path, current_path, target, error)) {
+                            confirm_popup(std::string(text(Text::NavigationError)) + error);
+                        } else {
+                            select_first_owner.clear();
+                            select_last_owner.clear();
+                            request_scan(target, {}, true, true, {});
+                        }
+                    } else if (entry.type == "[RESTO_NEXT]") {
+                        expand_resto(entry.full_path);
+                        need_refresh = true;
+                        select_first_owner = entry.full_path;
+                    } else if (entry.type == "[RESTO_PREV]") {
+                        prev_resto(entry.full_path);
+                        need_refresh = true;
+                        select_last_owner = entry.full_path;
+                    }
+                }
+                break;
+            case KEY_BACKSPACE:
+            case 8:
+            case 127: {
+                std::string error;
+                std::error_code path_error;
+                const auto absolute_path = std::filesystem::absolute(current_path, path_error).lexically_normal();
+                if (path_error) {
+                    error = path_error.message();
+                } else if (absolute_path != absolute_path.root_path()) {
+                    const auto parent = absolute_path.parent_path();
+                    std::filesystem::path target;
+                    if (resolve_directory_root(parent, current_path, target, error)) {
+                        select_first_owner.clear();
+                        select_last_owner.clear();
+                        request_scan(target, {}, true, true, absolute_path);
+                    }
+                }
+                if (!error.empty()) confirm_popup(std::string(text(Text::NavigationError)) + error);
+                break;
+            }
+            case 'o':
+            case 'O': {
+                std::string value;
+                if (prompt_for_path(value)) {
+                    std::string error;
+                    std::filesystem::path target;
+                    if (!resolve_directory_root(std::filesystem::u8path(value), current_path,
+                                                target, error)) {
+                        confirm_popup(std::string(text(Text::NavigationError)) + error);
+                    } else {
+                        select_first_owner.clear();
+                        select_last_owner.clear();
+                        request_scan(target, {}, true, true, {});
+                    }
+                }
+                break;
+            }
             case KEY_UP:
             case 'k':
                 if (selected > 0) selected--;
@@ -692,6 +1255,7 @@ int main(int argc, char* argv[]) {
                 }
                 break;
             case KEY_DC:
+                if (async_scans.busy()) break;
                 if (!entries.empty()) {
                     const auto& entry = entries[selected];
                     if (entry.type == "[RESTO_PREV]" || entry.type == "[RESTO_NEXT]")
@@ -704,11 +1268,11 @@ int main(int argc, char* argv[]) {
                             } else {
                                 std::filesystem::remove(entry.full_path);
                             }
-                            clear_dir_size_cache();
                         } catch (const std::exception& ex) {
                             confirm_popup(std::string(text(Text::Error)) + ": " + ex.what());
                         }
                         need_refresh = true;
+                        refresh_next_scan = true;
                     }
                 }
                 break;
@@ -728,6 +1292,14 @@ int main(int argc, char* argv[]) {
                     confirm_popup(text(Text::ColorsUnsupported));
                 }
                 break;
+            case 'w':
+            case 'W':
+                show_scan_diagnostics(scan_result);
+                break;
+        }
+        if (need_refresh) {
+            const bool invalidate_sizes = refresh_next_scan;
+            request_scan(current_path, expanded_dirs, false, invalidate_sizes, {});
         }
         update_scroll(selected, scroll_offset, visible_rows);
     }

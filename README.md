@@ -144,6 +144,10 @@ shows its children in the tree. The size bar is relative to the entries displaye
 at that level. Pagination and scrolling are independent: a large page can still
 be scrolled to fit the terminal.
 
+Displayed sizes are logical file lengths in bytes, including sparse files; they
+do not estimate how many storage blocks a file occupies. Files larger than 1 TiB
+are included in directory totals.
+
 ### Keyboard shortcuts
 
 | Key | Action |
@@ -152,13 +156,33 @@ be scrolled to fit the terminal.
 | Down / `j` | Move down |
 | Right / `l` | Expand a directory; advance a selected next-page row |
 | Left / `h` | Fold a directory; from a child, select and fold its parent |
+| Enter | Enter the selected directory; activates a selected page row |
+| Backspace | Return to the parent directory |
+| `O` | Type a path relative to the current root or an absolute path |
 | `g` / `G` | Select the first / last row of the current tree |
 | `E` | Toggle directory expansion or activate a pagination row |
 | `N` / `P` | Next / previous page of the selected directory |
+| `R` | Re-scan the current root and update cached sizes |
+| Escape | Cancel the active scan and keep the last completed listing |
 | Space | Open with the system's default application |
 | Delete | Delete the selected file or directory after confirmation |
 | `B` | Choose the bar's background and text colors |
+| `W` | Review filesystem errors and omitted entries from the last scan |
 | `Q` | Quit |
+
+Scans run in a managed background worker. While one is active, TreeFiles shows
+the scan root, directories and entries processed, bytes counted and elapsed
+time. It keeps the previous completed listing available for selection and
+scrolling; Delete is disabled until the replacement completes. Press Escape to
+cancel. Pressing `R` or changing roots replaces the pending scan with the
+latest request. Cancellation is cooperative between filesystem operations, so
+a filesystem call already blocked by the operating system must return first.
+All terminal drawing and key handling stay on the main thread.
+
+TreeFiles lists symbolic links and Windows directory junctions without following
+them. A link can be opened with Space or deleted without deleting its target.
+If an item could not be read, directory sizes are marked partial or unavailable;
+press `W` to review the affected paths and filesystem errors.
 
 In the color picker, use arrows or `j/k`, Enter to confirm each color and Escape
 to cancel. The picker starts with the current colors. In delete confirmations,
@@ -173,7 +197,7 @@ English is the default. Select Spanish for a session with:
 ~~~
 
 `--lang=es` also works. The language covers the footer, page labels, prompts,
-color picker, loading indicator and command-line help. Headless protocol keys
+color picker, scan status and command-line help. Headless protocol keys
 such as `selected_index` remain stable; the `language` field identifies the
 selected language. Unsupported language codes exit with code 2.
 
@@ -209,9 +233,15 @@ $env:TREEFILES_CONFIG = "$PWD\colors.ini"
 ### Headless use and tests
 
 Pipe one event per line. Arrow events use `UP`, `DOWN`, `LEFT` and `RIGHT`;
-`SPACE`, `DELETE` and `ENTER` represent those keys. Letter shortcuts work as
+`SPACE`, `DELETE`, `ENTER`, `BACKSPACE` and `REFRESH` represent those actions.
+`CD <path>` changes to a path relative to the current root or to an absolute
+path; the entire remainder of the line is treated as the literal path. Letter shortcuts work as
 in the interactive interface. `COLOR foreground background` applies and saves
-colors; `B` only logs the available choices in headless mode.
+colors; `B` only logs the available choices in headless mode. Headless scans
+remain synchronous by default. `SCAN_START` starts an asynchronous scan,
+`CANCEL_SCAN` requests cancellation, and `WAIT_SCAN` waits for the active and
+replacement scans to finish. While a scan runs, frames retain the last completed
+listing and report the target and progress counters.
 
 ~~~powershell
 'COLOR white blue', 'j', 'l', 'q' |
@@ -219,9 +249,14 @@ colors; `B` only logs the available choices in headless mode.
 ~~~
 
 Frames contain the current path, language, page size, pagination, selection,
-scrolling, expansion, colors and entry list. Headless opening logs an action;
-confirmed deletion still removes files. Exit codes are 0 on success, 1 for an
-invalid directory and 2 for invalid command-line options.
+scrolling, expansion, colors, entry list, `scan_status`, and structured
+`diagnostics_count`/`diagnostic_N` records. They also include
+`async_scan_state`, `async_scan_root`, `scan_progress_entries`,
+`scan_progress_directories`, `scan_progress_bytes`, and
+`scan_progress_elapsed_seconds`. Headless opening logs an action;
+confirmed deletion still removes files. Exit codes are 0 on success, 1 when the
+root cannot be listed, and 2 for invalid command-line options. Errors isolated
+to a child keep accessible results and mark the scan partial.
 
 ## Troubleshooting
 

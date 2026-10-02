@@ -5,7 +5,9 @@ $ErrorActionPreference = 'Stop'
 $Binary = (Resolve-Path -LiteralPath $Binary).Path
 $testRoot = Join-Path ([IO.Path]::GetTempPath()) ('treefiles_test_' + [Guid]::NewGuid().ToString('N'))
 $oldOutputEncoding = [Console]::OutputEncoding
+$oldInputEncoding = $OutputEncoding
 [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false)
+$OutputEncoding = New-Object System.Text.UTF8Encoding($false)
 $script:checks = 0
 $oldConfig = $env:TREEFILES_CONFIG
 $env:TREEFILES_CONFIG = Join-Path $testRoot ('config con espacios ' + [char]0x00f1 + '/config.ini')
@@ -53,6 +55,17 @@ function Frame([string]$Output, [int]$Number) {
     $match = [regex]::Match($Output, "(?s)=== FRAME $Number ===\r?\n(.*?)=== END FRAME ===")
     if (-not $match.Success) { throw "Missing frame $Number." }
     return $match.Groups[1].Value
+}
+
+function Read-NextFrame([System.Diagnostics.Process]$Process) {
+    $lines = New-Object 'System.Collections.Generic.List[string]'
+    while ($true) {
+        $line = $Process.StandardOutput.ReadLine()
+        if ($null -eq $line) { throw 'TreeFiles exited before completing a frame.' }
+        $lines.Add($line)
+        if ($line -eq '=== END FRAME ===') { break }
+    }
+    return ($lines -join "`n")
 }
 
 try {
@@ -184,6 +197,119 @@ try {
     $output = Run-Headless @('j', 'k', 'h', 'l', 'g', 'G', 'q') $emptyDirectory
     Check ((Frame $output 7).Contains('total_entries: 0')) 'Vim shortcuts are safe on an empty directory'
 
+    $refreshRoot = Join-Path $testRoot 'refresh-root'
+    New-Item -ItemType Directory -Path (Join-Path $refreshRoot 'sub') -Force | Out-Null
+    Write-TestFile (Join-Path $refreshRoot 'a.txt') 1
+    Write-TestFile (Join-Path $refreshRoot 'b.txt') 2
+    Write-TestFile (Join-Path $refreshRoot 'sub/deep.txt') 1
+    $refreshInfo = New-Object System.Diagnostics.ProcessStartInfo
+    $refreshInfo.FileName = $Binary
+    $refreshInfo.Arguments = '--headless "' + $refreshRoot + '"'
+    $refreshInfo.UseShellExecute = $false
+    $refreshInfo.CreateNoWindow = $true
+    $refreshInfo.RedirectStandardInput = $true
+    $refreshInfo.RedirectStandardOutput = $true
+    $refreshInfo.RedirectStandardError = $true
+    $refreshProcess = New-Object System.Diagnostics.Process
+    $refreshProcess.StartInfo = $refreshInfo
+    try {
+        [void]$refreshProcess.Start()
+        [void](Read-NextFrame $refreshProcess)
+        $refreshProcess.StandardInput.WriteLine('DOWN')
+        [void]$refreshProcess.StandardInput.Flush()
+        [void](Read-NextFrame $refreshProcess)
+        $refreshProcess.StandardInput.WriteLine('DOWN')
+        $refreshProcess.StandardInput.Flush()
+        [void](Read-NextFrame $refreshProcess)
+        $refreshProcess.StandardInput.WriteLine('e')
+        $refreshProcess.StandardInput.Flush()
+        [void](Read-NextFrame $refreshProcess)
+        $refreshProcess.StandardInput.WriteLine('UP')
+        $refreshProcess.StandardInput.Flush()
+        [void](Read-NextFrame $refreshProcess)
+
+        Write-TestFile (Join-Path $refreshRoot 'a.txt') 12
+        Write-TestFile (Join-Path $refreshRoot 'sub/deep.txt') 20
+        Write-TestFile (Join-Path $refreshRoot 'added.txt') 6
+        Move-Item -LiteralPath (Join-Path $refreshRoot 'b.txt') -Destination (Join-Path $refreshRoot 'renamed.txt')
+        $refreshProcess.StandardInput.WriteLine('REFRESH')
+        $refreshProcess.StandardInput.Flush()
+        $refreshFrame = Read-NextFrame $refreshProcess
+        Check ($refreshFrame.Contains('deep.txt')) 'refresh preserves valid expanded directories'
+        Check ($refreshFrame.Contains('added.txt') -and $refreshFrame.Contains('renamed.txt') -and -not $refreshFrame.Contains('b.txt')) 'refresh sees external create and rename'
+        Check ($refreshFrame.Contains(' 2: >>> [FILE] a.txt')) 'refresh restores selection by path after reordering'
+
+        Remove-Item -LiteralPath (Join-Path $refreshRoot 'added.txt')
+        $refreshProcess.StandardInput.WriteLine('r')
+        $refreshProcess.StandardInput.Flush()
+        $deleteFrame = Read-NextFrame $refreshProcess
+        Check (-not $deleteFrame.Contains('added.txt')) 'refresh sees external deletion'
+        Check ($deleteFrame.Contains('a.txt')) 'refresh keeps a valid selection after deletion'
+        $refreshProcess.StandardInput.WriteLine('q')
+        $refreshProcess.StandardInput.Flush()
+        $refreshProcess.StandardInput.Close()
+        $refreshProcess.WaitForExit()
+        Check ($refreshProcess.ExitCode -eq 0) 'refresh session exits cleanly'
+    } finally {
+        $refreshProcess.Dispose()
+    }
+
+    $pageRoot = Join-Path $testRoot 'refresh-pages'
+    New-Item -ItemType Directory -Path $pageRoot -Force | Out-Null
+    foreach ($name in @('one.txt', 'two.txt', 'three.txt')) { Write-TestFile (Join-Path $pageRoot $name) 1 }
+    $pageInfo = New-Object System.Diagnostics.ProcessStartInfo
+    $pageInfo.FileName = $Binary
+    $pageInfo.Arguments = '--headless --page-size 1 "' + $pageRoot + '"'
+    $pageInfo.UseShellExecute = $false
+    $pageInfo.CreateNoWindow = $true
+    $pageInfo.RedirectStandardInput = $true
+    $pageInfo.RedirectStandardOutput = $true
+    $pageInfo.RedirectStandardError = $true
+    $pageProcess = New-Object System.Diagnostics.Process
+    $pageProcess.StartInfo = $pageInfo
+    try {
+        [void]$pageProcess.Start()
+        [void](Read-NextFrame $pageProcess)
+        foreach ($page in 1..2) {
+            $pageProcess.StandardInput.WriteLine('n')
+            $pageProcess.StandardInput.Flush()
+            [void](Read-NextFrame $pageProcess)
+        }
+        Remove-Item -LiteralPath (Join-Path $pageRoot 'two.txt')
+        Remove-Item -LiteralPath (Join-Path $pageRoot 'three.txt')
+        $pageProcess.StandardInput.WriteLine('R')
+        $pageProcess.StandardInput.Flush()
+        $pageFrame = Read-NextFrame $pageProcess
+        Check (-not $pageFrame.Contains('Previous') -and -not $pageFrame.Contains('Next')) 'refresh removes stale pagination rows'
+        Check ($pageFrame.Contains('selected_index: 0')) 'refresh clamps a deleted last-page selection'
+        $pageProcess.StandardInput.WriteLine('q')
+        $pageProcess.StandardInput.Flush()
+        $pageProcess.StandardInput.Close()
+        $pageProcess.WaitForExit()
+        Check ($pageProcess.ExitCode -eq 0) 'last-page refresh session exits cleanly'
+    } finally {
+        $pageProcess.Dispose()
+    }
+
+    $navRoot = Join-Path $testRoot ('navigation-' + [char]0x00f1)
+    $spaceName = 'folder with spaces ' + [char]0x00f1
+    New-Item -ItemType Directory -Path (Join-Path $navRoot 'sub') -Force | Out-Null
+    New-Item -ItemType Directory -Path (Join-Path $navRoot $spaceName) -Force | Out-Null
+    Write-TestFile (Join-Path $navRoot 'sub/deep.txt') 20
+    Write-TestFile (Join-Path $navRoot ($spaceName + '/inside.txt')) 2
+    Write-TestFile (Join-Path $navRoot 'root.txt') 1
+    $navEvents = @('ENTER', 'BACKSPACE', ('CD ' + $spaceName),
+                   'CD missing directory', 'BACKSPACE', 'ENTER', 'ENTER', 'q')
+    $output = Run-Headless $navEvents $navRoot
+    Check ((Frame $output 1).Contains((Join-Path $navRoot 'sub'))) 'Enter changes the root to the selected directory'
+    Check ((Frame $output 2).Contains("current_path: $navRoot")) 'Backspace returns to the parent root'
+    Check ((Frame $output 2).Contains('>>> [DIR]')) 'Backspace selects the directory returned from'
+    Check ((Frame $output 3).Contains((Join-Path $navRoot $spaceName))) 'CD accepts a relative Unicode path with spaces'
+    Check ($output.Contains('POPUP navigation_error')) 'invalid CD reports a path error'
+    Check ((Frame $output 4).Contains("current_path: $navRoot")) 'failed CD keeps the previous root'
+    Check ((Frame $output 5).Contains((Join-Path $navRoot $spaceName))) 'Enter reopens the selected directory'
+    Check ((Frame $output 6).Contains((Join-Path $navRoot $spaceName))) 'Enter on a file does not launch or navigate'
+
     $output = Run-Headless @('q') $bigDirectory
     Check ((Frame $output 0).Contains('language: en')) 'English is the default interface language'
     Check ((Frame $output 0).Contains('Next')) 'default navigation is English'
@@ -212,11 +338,76 @@ try {
     $output = Run-Headless @('q') $bigDirectory
     Check ((Frame $output 0).Contains('bar_fg: 0') -and (Frame $output 0).Contains('bar_bg: 6')) 'invalid saved color falls back without losing valid fields'
 
+    $output = Run-Headless @('W', 'q') $testRoot
+    Check ($output.Contains('POPUP scan_diagnostics')) 'headless W opens scan diagnostics'
+    Check ((Frame $output 0).Contains('scan_status: complete')) 'complete scan status is included in frames'
+
+    $junctionTarget = Join-Path $testRoot 'junction-target'
+    $junctionPath = Join-Path $testRoot 'junction-link'
+    New-Item -ItemType Directory -Path $junctionTarget | Out-Null
+    Write-TestFile (Join-Path $junctionTarget 'keep.txt') 32
+    $junctionCreated = $false
+    try {
+        New-Item -ItemType Junction -Path $junctionPath -Target $junctionTarget | Out-Null
+        $junctionCreated = $true
+    } catch {
+        Write-Host "SKIP: Windows junction fixture unavailable: $($_.Exception.Message)"
+    }
+    if ($junctionCreated) {
+        $output = Run-Headless @('q') $testRoot
+        Check ((Frame $output 0).Contains('[LINK] junction-link')) 'Windows junction is displayed as a link'
+        $output = Run-Headless @('q') $junctionPath
+        Check ((Frame $output 0).Contains('keep.txt')) 'explicit Windows junction root is scanned once'
+        $linkDeleteRoot = Join-Path $testRoot 'link-delete'
+        $linkTarget = Join-Path $linkDeleteRoot 'target'
+        New-Item -ItemType Directory -Path $linkTarget -Force | Out-Null
+        Write-TestFile (Join-Path $linkTarget 'keep.txt') 32
+        $junctionToDelete = Join-Path $linkDeleteRoot 'link'
+        $deleteJunctionCreated = $false
+        try {
+            New-Item -ItemType Junction -Path $junctionToDelete -Target $linkTarget | Out-Null
+            $deleteJunctionCreated = $true
+        } catch {
+            Write-Host "SKIP: Windows junction delete fixture unavailable: $($_.Exception.Message)"
+        }
+        if ($deleteJunctionCreated) {
+            $output = Run-Headless @('G', 'DELETE', 'y', 'q') $linkDeleteRoot
+            Check ($output.Contains('ACTION deleted')) 'deleting a junction is logged as an action'
+            Check (Test-Path -LiteralPath (Join-Path $linkTarget 'keep.txt')) 'deleting a junction keeps its target'
+        }
+    }
+
+    $asyncRoot = Join-Path $testRoot 'async scan root'
+    $asyncChild = Join-Path $asyncRoot 'nested folder'
+    New-Item -ItemType Directory -Path $asyncChild -Force | Out-Null
+    Write-TestFile (Join-Path $asyncRoot 'root.txt') 12
+    Write-TestFile (Join-Path $asyncChild 'nested.txt') 20
+    $output = Run-Headless @('SCAN_START', 'WAIT_SCAN', 'q') $asyncRoot
+    Check ((Frame $output 1).Contains('async_scan_state: running')) 'SCAN_START keeps the previous snapshot visible'
+    $completedFrame = Frame $output 2
+    Check ($completedFrame.Contains('async_scan_state: complete')) 'WAIT_SCAN publishes the completed generation'
+    $processedEntries = [int]([regex]::Match($completedFrame, 'scan_progress_entries: (\d+)').Groups[1].Value)
+    Check ($processedEntries -ge 2 -and $completedFrame.Contains('scan_progress_bytes: 32')) 'completed scan reports entry and byte progress'
+
+    $output = Run-Headless @('SCAN_START', 'CANCEL_SCAN', 'WAIT_SCAN', 'q') $asyncRoot
+    Check ((Frame $output 2).Contains('async_scan_state: cancelling')) 'CANCEL_SCAN requests cooperative cancellation'
+    $cancelledFrame = Frame $output 3
+    Check ($cancelledFrame.Contains('async_scan_state: cancelled')) 'WAIT_SCAN joins a cancelled worker'
+    $initialEntryCount = [regex]::Match((Frame $output 0), 'total_entries: (\d+)').Groups[1].Value
+    $cancelledEntryCount = [regex]::Match($cancelledFrame, 'total_entries: (\d+)').Groups[1].Value
+    Check ($initialEntryCount -eq $cancelledEntryCount) 'cancellation keeps the previous snapshot intact'
+
+    $output = Run-Headless @('SCAN_START', ('CD ' + $asyncChild), 'WAIT_SCAN', 'q') $asyncRoot
+    Check ((Frame $output 2).Contains("current_path: $asyncRoot") -and (Frame $output 2).Contains("async_scan_root: $asyncChild")) 'root change replaces an in-flight scan without swapping snapshots'
+    $replacementFrame = Frame $output 3
+    Check ($replacementFrame.Contains("current_path: $asyncChild") -and $replacementFrame.Contains('nested.txt')) 'only the newest root generation is published'
+
     Write-Host "Results: $script:checks passed, 0 failed"
 } finally {
     if ($null -eq $oldConfig) { Remove-Item Env:TREEFILES_CONFIG -ErrorAction SilentlyContinue }
     else { $env:TREEFILES_CONFIG = $oldConfig }
     [Console]::OutputEncoding = $oldOutputEncoding
+    $OutputEncoding = $oldInputEncoding
     if (Test-Path -LiteralPath $testRoot) {
         $resolvedRoot = [IO.Path]::GetFullPath($testRoot)
         $temporaryRoot = [IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd('\') + '\'
