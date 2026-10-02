@@ -514,10 +514,10 @@ mkdir -p "$sort_child"
 output=$(run_headless_bigdir $'n\nSORT name desc\nREFRESH\nCD '"$sort_child"$'\nBACKSPACE\nS\nT\nq' --page-size=2)
 check "default sort state is size descending" "$(extract_frame "$output" 0)" 'sort_key: size'
 check "default sort direction is descending" "$(extract_frame "$output" 0)" 'sort_order: desc'
-check "pagination reaches the second page before sorting" "$(extract_frame "$output" 1)" 'file_0002.txt'
+check "pagination reaches the second page before sorting" "$(extract_frame "$output" 1)" 'file_03.txt'
 check "sort change resets selection to first result" "$(extract_frame "$output" 2)" 'selected_index: 0'
 check "sort change resets scroll" "$(extract_frame "$output" 2)" 'scroll_offset: 0'
-check "sort before pagination changes first-page membership" "$(extract_frame "$output" 2)" 'file_0049.txt'
+check "sort before pagination changes first-page membership" "$(extract_frame "$output" 2)" 'file_50.txt'
 check "refresh keeps selected sort options" "$(extract_frame "$output" 3)" 'sort_key: name'
 check "navigation keeps selected sort options" "$(extract_frame "$output" 4)" 'sort_order: desc'
 check "return to parent keeps selected sort options" "$(extract_frame "$output" 5)" 'current_path:'
@@ -526,7 +526,7 @@ check "T toggles the sort direction" "$(extract_frame "$output" 7)" 'sort_order:
 output=$(run_headless_bigdir "q" --sort=name --order=asc)
 check "CLI equals forms select name ascending" "$(extract_frame "$output" 0)" 'sort_key: name'
 check "CLI equals form orders names ascending" "$(extract_frame "$output" 0)" 'sort_order: asc'
-check "CLI name sort picks the first name" "$(extract_frame "$output" 0)" 'file_0000.txt'
+check "CLI name sort picks the first name" "$(extract_frame "$output" 0)" 'file_01.txt'
 for argument in "--sort" "--sort=type" "--order" "--order=sideways"; do
     if output=$("$BINARY" "$argument" 2>&1); then status=0; else status=$?; fi
     check "invalid sort option rejected before curses: $argument" "$status" '^2$'
