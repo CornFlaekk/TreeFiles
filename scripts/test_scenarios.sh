@@ -620,7 +620,7 @@ else
     FAIL=$((FAIL + 1))
 fi
 csv_path="$TEST_DIR/export report.csv"
-"$BINARY" --export=csv --output="$csv_path" --page-size=1 "$export_root" 2>"$TEST_DIR/csv.stderr"
+"$BINARY" --export=csv --output="$csv_path" --page-size=1 --sort=name --order=asc "$export_root" 2>"$TEST_DIR/csv.stderr"
 if [ ! -s "$TEST_DIR/csv.stderr" ] && python3 -c 'import csv,sys; rows=list(csv.DictReader(open(sys.argv[1],encoding="utf-8",newline=""))); assert len(rows)==4; assert rows[0]["path"]=="alpha, ñ.txt"; assert all(r["scan_complete"]=="true" and r["depth"]=="0" for r in rows); assert next(r for r in rows if r["type"]=="directory")["size_bytes"]=="5"; assert any(r["path"]=="comma,\"quoted\"\nline\\part.txt" for r in rows)' "$csv_path"; then
     echo "  PASS: Python CSV reader verifies quoted commas, quotes, backslashes, newlines, Unicode, and all direct children"
     PASS=$((PASS + 1))
