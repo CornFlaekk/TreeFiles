@@ -23,7 +23,25 @@ static void draw_horizontal_line(int row, int col_start, int col_end, chtype lef
     mvaddch(row, col_end, right);
 }
 
-void draw_header(int cols, const std::filesystem::path& current_path, int page, int total_pages) {
+static std::string utf8_prefix(const std::string& value, size_t max_bytes) {
+    if (value.size() <= max_bytes) return value;
+    if (max_bytes <= 3) return value.substr(0, max_bytes);
+    size_t prefix = max_bytes - 3;
+    while (prefix > 0 && (static_cast<unsigned char>(value[prefix]) & 0xc0) == 0x80) --prefix;
+    return value.substr(0, prefix) + "...";
+}
+
+static std::string filter_summary(const FilterOptions& filter, size_t matching_files) {
+    if (!filter_is_active(filter)) return {};
+    const std::string query = filter.text.empty() ? "*" : utf8_prefix(filter.text, 13);
+    const std::string extension = filter.extension.empty()
+        ? "" : " ext:" + utf8_prefix(filter.extension, 9);
+    return std::string(text(Text::FilterLabel)) + ": " + query + extension + " (" +
+           std::to_string(matching_files) + ")";
+}
+
+void draw_header(int cols, const std::filesystem::path& current_path, int page, int total_pages,
+                 SortOptions sort, const FilterOptions& filter, size_t matching_files) {
     // Top border
     draw_horizontal_line(0, 0, cols - 1, ACS_ULCORNER, ACS_HLINE, ACS_URCORNER);
 
@@ -43,7 +61,15 @@ void draw_header(int cols, const std::filesystem::path& current_path, int page, 
     }
 
     int path_x = 16;
-    int max_path_w = cols - path_x - 20;
+    const Text sort_text = sort.key == SortKey::size ? Text::SortSize
+        : sort.key == SortKey::name ? Text::SortName : Text::SortMtime;
+    std::string right_status = filter_summary(filter, matching_files);
+    if (!right_status.empty()) right_status += " | ";
+    right_status += std::string(text(Text::SortLabel)) + ": " + text(sort_text) + "/" + sort_order_name(sort.order);
+    if (total_pages > 1)
+        right_status += " | " + std::string(text(Text::Page)) + " " + std::to_string(page + 1) + "/" + std::to_string(total_pages);
+    int right_x = cols - 3 - static_cast<int>(right_status.size());
+    int max_path_w = right_x - path_x - 4;
     if (max_path_w > 5 && (int)path_str.size() > max_path_w) {
         path_str = path_str.substr(0, max_path_w - 1) + "\u2026";
     }
@@ -51,15 +77,9 @@ void draw_header(int cols, const std::filesystem::path& current_path, int page, 
         mvaddstr(0, path_x, path_str.c_str());
     }
 
-    // Right: page info if applicable
-    if (total_pages > 1) {
-        char buf[32];
-        snprintf(buf, sizeof(buf), "%s %d/%d", text(Text::Page), page + 1, total_pages);
-        int right_x = cols - 3 - (int)strlen(buf);
-        if (right_x > path_x + 2) {
-            mvaddch(0, right_x - 2, ACS_VLINE);
-            mvaddstr(0, right_x, buf);
-        }
+    if (right_x > path_x + 2) {
+        mvaddch(0, right_x - 2, ACS_VLINE);
+        mvaddstr(0, right_x, right_status.c_str());
     }
 }
 
@@ -71,7 +91,7 @@ struct FooterSection {
 static const FooterSection sections[] = {
     {Text::Navigation, {Text::MoveBinding, Text::PageBinding, Text::EnterDirectoryBinding, Text::ParentDirectoryBinding}},
     {Text::Actions, {Text::ExpandBinding, Text::OpenBinding, Text::DeleteBinding, Text::ChangeRootBinding}},
-    {Text::System, {Text::ColorBinding, Text::WarningsBinding, Text::RefreshBinding, Text::QuitBinding}},
+    {Text::System, {Text::ColorBinding, Text::SortBinding, Text::FilterBinding, Text::WarningsBinding, Text::RefreshBinding, Text::QuitBinding}},
 };
 
 // Build a flat string of bindings for a section
@@ -114,23 +134,27 @@ int footer_height(int cols) {
 }
 
 void draw_footer(int rows, int cols, int selected, int total_entries, double last_scan_ms,
-                 bool scan_has_warnings) {
+                 bool scan_has_warnings, const FilterOptions& filter, size_t matching_files) {
     int content_lines = count_content_lines(cols);
     int footer_start = rows - 2 - content_lines;
 
     // Top separator
     draw_horizontal_line(footer_start, 0, cols - 1, ACS_LTEE, ACS_HLINE, ACS_RTEE);
 
-    // Right info string (embedded in bottom border later)
-    char right_buf[64];
     std::string scan_str = format_scan_time(last_scan_ms);
     const char* scan_label = text(Text::Scan);
     std::string decorated_scan = scan_has_warnings ? std::string(scan_label) + "*" : scan_label;
+    std::string right_info = filter_summary(filter, matching_files);
+    if (!right_info.empty()) right_info += " | ";
     if (total_entries > 0) {
-        snprintf(right_buf, sizeof(right_buf), " %d/%d  %s: %s ", selected + 1, total_entries, decorated_scan.c_str(), scan_str.c_str());
+        right_info += std::to_string(selected + 1) + "/" + std::to_string(total_entries) +
+            "  " + decorated_scan + ": " + scan_str;
     } else {
-        snprintf(right_buf, sizeof(right_buf), " %s: %s ", decorated_scan.c_str(), scan_str.c_str());
+        right_info += decorated_scan + ": " + scan_str;
     }
+    right_info = " " + right_info + " ";
+    if (right_info.size() > static_cast<size_t>(std::max(0, cols - 4)))
+        right_info = utf8_prefix(right_info, static_cast<size_t>(std::max(0, cols - 4)));
 
     if (wide_footer(cols)) {
         int row1 = footer_start + 1;
@@ -191,13 +215,13 @@ void draw_footer(int rows, int cols, int selected, int total_entries, double las
     }
 
     // Bottom border with embedded scan/position info
-    int right_w = (int)strlen(right_buf);
+    int right_w = static_cast<int>(right_info.size());
     int right_x = cols - 2 - right_w;
     if (right_x < 2) right_x = 2;
 
     mvaddch(rows - 1, 0, ACS_LLCORNER);
     for (int c = 1; c < right_x; ++c) mvaddch(rows - 1, c, ACS_HLINE);
-    mvaddstr(rows - 1, right_x, right_buf);
+    mvaddstr(rows - 1, right_x, right_info.c_str());
     for (int c = right_x + right_w; c < cols - 1; ++c) mvaddch(rows - 1, c, ACS_HLINE);
     mvaddch(rows - 1, cols - 1, ACS_LRCORNER);
 }
@@ -493,6 +517,59 @@ static std::string wide_to_utf8(const std::wstring& value) {
     return encoded;
 }
 
+static std::wstring utf8_to_wide(const std::string& value) {
+    std::wstring decoded;
+    const auto append_codepoint = [&](std::uint32_t codepoint) {
+#if WCHAR_MAX <= 0xffff
+        if (codepoint > 0xffff) {
+            codepoint -= 0x10000;
+            decoded.push_back(static_cast<wchar_t>(0xd800 + (codepoint >> 10)));
+            decoded.push_back(static_cast<wchar_t>(0xdc00 + (codepoint & 0x3ff)));
+        } else {
+            decoded.push_back(static_cast<wchar_t>(codepoint));
+        }
+#else
+        decoded.push_back(static_cast<wchar_t>(codepoint));
+#endif
+    };
+    for (size_t index = 0; index < value.size();) {
+        const auto first = static_cast<unsigned char>(value[index]);
+        std::uint32_t codepoint = 0xfffd;
+        size_t length = 1;
+        if (first < 0x80) codepoint = first;
+        else if ((first & 0xe0) == 0xc0 && index + 1 < value.size()) {
+            const auto second = static_cast<unsigned char>(value[index + 1]);
+            if ((second & 0xc0) == 0x80) {
+                codepoint = ((first & 0x1f) << 6) | (second & 0x3f);
+                length = 2;
+                if (codepoint < 0x80) codepoint = 0xfffd;
+            }
+        } else if ((first & 0xf0) == 0xe0 && index + 2 < value.size()) {
+            const auto second = static_cast<unsigned char>(value[index + 1]);
+            const auto third = static_cast<unsigned char>(value[index + 2]);
+            if ((second & 0xc0) == 0x80 && (third & 0xc0) == 0x80) {
+                codepoint = ((first & 0x0f) << 12) | ((second & 0x3f) << 6) | (third & 0x3f);
+                length = 3;
+                if (codepoint < 0x800 || (codepoint >= 0xd800 && codepoint <= 0xdfff))
+                    codepoint = 0xfffd;
+            }
+        } else if ((first & 0xf8) == 0xf0 && index + 3 < value.size()) {
+            const auto second = static_cast<unsigned char>(value[index + 1]);
+            const auto third = static_cast<unsigned char>(value[index + 2]);
+            const auto fourth = static_cast<unsigned char>(value[index + 3]);
+            if ((second & 0xc0) == 0x80 && (third & 0xc0) == 0x80 && (fourth & 0xc0) == 0x80) {
+                codepoint = ((first & 0x07) << 18) | ((second & 0x3f) << 12) |
+                    ((third & 0x3f) << 6) | (fourth & 0x3f);
+                length = 4;
+                if (codepoint < 0x10000 || codepoint > 0x10ffff) codepoint = 0xfffd;
+            }
+        }
+        append_codepoint(codepoint);
+        index += length;
+    }
+    return decoded;
+}
+
 bool prompt_for_path(std::string& utf8_path) {
     int rows = 0, cols = 0;
     getmaxyx(stdscr, rows, cols);
@@ -542,6 +619,84 @@ bool prompt_for_path(std::string& utf8_path) {
 
     if (accepted) {
         utf8_path = wide_to_utf8(value);
+    }
+    delwin(win);
+    touchwin(stdscr);
+    refresh();
+    return accepted;
+}
+
+bool prompt_for_filter(FilterOptions& filter) {
+    int rows = 0, cols = 0;
+    getmaxyx(stdscr, rows, cols);
+    if (rows < 11 || cols < 30) return false;
+    const int width = std::min(cols - 2, 82);
+    const int height = 9;
+    WINDOW* win = newwin(height, width, (rows - height) / 2, (cols - width) / 2);
+    if (!win) return false;
+    keypad(win, TRUE);
+    std::wstring name = utf8_to_wide(filter.text);
+    std::wstring extension = utf8_to_wide(filter.extension);
+    std::wstring* fields[] = {&name, &extension};
+    int active = 0;
+    bool accepted = false;
+    while (true) {
+        werase(win);
+        box(win, 0, 0);
+        mvwaddnstr(win, 1, 2, text(Text::FilterNamePrompt), width - 4);
+        mvwaddnstr(win, 4, 2, text(Text::FilterExtensionPrompt), width - 4);
+        mvwaddnstr(win, 7, 2, text(Text::FilterHint), width - 4);
+        const int field_width = width - 4;
+        for (int field = 0; field < 2; ++field) {
+            const auto& value = *fields[field];
+            const int row = field == 0 ? 2 : 5;
+            const size_t start = value.size() > static_cast<size_t>(field_width)
+                ? value.size() - static_cast<size_t>(field_width) : 0;
+            if (start < value.size())
+                mvwaddnwstr(win, row, 2, value.data() + start, field_width);
+            if (field == active)
+                wattron(win, A_REVERSE);
+            mvwaddch(win, row, 2 + std::min(field_width - 1,
+                static_cast<int>(value.size() - start)), ' ');
+            if (field == active)
+                wattroff(win, A_REVERSE);
+        }
+        const auto& active_value = *fields[active];
+        const int active_row = active == 0 ? 2 : 5;
+        const size_t active_start = active_value.size() > static_cast<size_t>(field_width)
+            ? active_value.size() - static_cast<size_t>(field_width) : 0;
+        wmove(win, active_row, 2 + static_cast<int>(std::min(active_value.size() - active_start,
+                                                              static_cast<size_t>(field_width - 1))));
+        wrefresh(win);
+
+        wint_t input = 0;
+        const int kind = wget_wch(win, &input);
+        if (kind == ERR) continue;
+        if (kind == OK && input == 27) break;
+        if (kind == OK && input == L'\t') {
+            active = 1 - active;
+            continue;
+        }
+        auto& value = *fields[active];
+        if ((kind == KEY_CODE_YES && input == KEY_BACKSPACE) || input == 8 || input == 127) {
+            if (!value.empty()) {
+                const wchar_t last = value.back();
+                value.pop_back();
+                if (last >= 0xdc00 && last <= 0xdfff && !value.empty() &&
+                    value.back() >= 0xd800 && value.back() <= 0xdbff) value.pop_back();
+            }
+        } else if ((kind == KEY_CODE_YES && input == KEY_ENTER) || input == L'\n' || input == L'\r') {
+            accepted = true;
+            break;
+        } else if (kind == OK && input >= 32 && value.size() < 512 &&
+                   (std::iswprint(static_cast<wint_t>(input)) ||
+                    (input >= 0xd800 && input <= 0xdfff))) {
+            value.push_back(static_cast<wchar_t>(input));
+        }
+    }
+    if (accepted) {
+        filter.text = wide_to_utf8(name);
+        filter.extension = wide_to_utf8(extension);
     }
     delwin(win);
     touchwin(stdscr);

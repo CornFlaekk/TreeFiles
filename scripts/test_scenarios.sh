@@ -505,7 +505,34 @@ else
 fi
 
 echo ""
-echo "=== Scenario 20: Persistent preferences ==="
+echo "=== Scenario 20: Sorting ==="
+setup_bigdir
+sort_child="$TEST_DIR/bigdir/sub"
+mkdir -p "$sort_child"
+: > "$sort_child/child-a.txt"
+: > "$sort_child/child-z.txt"
+output=$(run_headless_bigdir $'n\nSORT name desc\nREFRESH\nCD '"$sort_child"$'\nBACKSPACE\nS\nT\nq' --page-size=2)
+check "default sort state is size descending" "$(extract_frame "$output" 0)" 'sort_key: size'
+check "default sort direction is descending" "$(extract_frame "$output" 0)" 'sort_order: desc'
+check "pagination reaches the second page before sorting" "$(extract_frame "$output" 1)" 'file_03.txt'
+check "sort change resets selection to first result" "$(extract_frame "$output" 2)" 'selected_index: 0'
+check "sort change resets scroll" "$(extract_frame "$output" 2)" 'scroll_offset: 0'
+check "sort before pagination changes first-page membership" "$(extract_frame "$output" 2)" 'file_50.txt'
+check "refresh keeps selected sort options" "$(extract_frame "$output" 3)" 'sort_key: name'
+check "navigation keeps selected sort options" "$(extract_frame "$output" 4)" 'sort_order: desc'
+check "return to parent keeps selected sort options" "$(extract_frame "$output" 5)" 'current_path:'
+check "S cycles the sort key" "$(extract_frame "$output" 6)" 'sort_key: mtime'
+check "T toggles the sort direction" "$(extract_frame "$output" 7)" 'sort_order: asc'
+output=$(run_headless_bigdir "q" --sort=name --order=asc)
+check "CLI equals forms select name ascending" "$(extract_frame "$output" 0)" 'sort_key: name'
+check "CLI equals form orders names ascending" "$(extract_frame "$output" 0)" 'sort_order: asc'
+check "CLI name sort picks the first name" "$(extract_frame "$output" 0)" 'file_01.txt'
+for argument in "--sort" "--sort=type" "--order" "--order=sideways"; do
+    if output=$("$BINARY" "$argument" 2>&1); then status=0; else status=$?; fi
+    check "invalid sort option rejected before curses: $argument" "$status" '^2$'
+done
+
+echo "=== Scenario 21: Persistent preferences ==="
 setup_bigdir
 output=$(run_headless_bigdir "q" --lang=es --page-size=7 --save-settings)
 check "save-settings persists language" "$(extract_frame "$output" 0)" 'language: es'
@@ -559,6 +586,166 @@ check "failed atomic save returns an error" "$status" '^1$'
 check "failed atomic save preserves existing target" "$(cat "$TEST_DIR/blocked.ini/keep.txt")" '^preserve$'
 check "failed preference save removes temporary files" "$(find "$TEST_DIR" -maxdepth 1 -name 'blocked.ini.tmp.*' -print)" '^$'
 export TREEFILES_CONFIG=$old_config
+
+echo ""
+echo "=== Scenario 22: Filename and extension filters ==="
+filter_root="$TEST_DIR/filter-root"
+filter_context="$filter_root/context"
+mkdir -p "$filter_context"
+printf '12345678' > "$filter_root/Annual Report.TXT"
+printf '1234' > "$filter_root/report.csv"
+printf '123' > "$filter_root/other.txt"
+printf '12345678901234567890' > "$filter_context/deep-report.log"
+printf '1234567890' > "$filter_context/unmatched.bin"
+output=$(printf 'e\nFILTER annual report\nENTER\nBACKSPACE\nEXT .TXT\nREFRESH\nFILTER missing\nCLEAR_FILTER\nq\n' | "$BINARY" --headless "$filter_root")
+f2=$(extract_frame "$output" 2)
+check "FILTER preserves spaces and matches filename case-insensitively" "$f2" 'filter_text: annual report'
+check "name filter counts only matching files" "$f2" 'matching_files: 1'
+check "name filter retains context directories and matching file" "$f2" 'Annual Report.TXT'
+check "filter resets selection and scroll" "$f2" 'selected_index: 0'
+f3=$(extract_frame "$output" 3)
+check "Enter preserves filters while changing root" "$f3" "current_path: $filter_context"
+f4=$(extract_frame "$output" 4)
+check "Backspace preserves filters" "$f4" 'filter_text: annual report'
+f5=$(extract_frame "$output" 5)
+check "EXT combines filters and ignores extension case" "$f5" 'filter_extension: .TXT'
+check "combined filters count the one matching file" "$f5" 'matching_files: 1'
+f6=$(extract_frame "$output" 6)
+check "refresh keeps filters" "$f6" 'filter_extension: .TXT'
+f7=$(extract_frame "$output" 7)
+check "zero matches retain the context directory" "$f7" 'context'
+check "zero matches are counted" "$f7" 'matching_files: 0'
+check_not "zero matches have no phantom next page" "$f7" 'Next'
+f8=$(extract_frame "$output" 8)
+check "CLEAR_FILTER clears filename and extension" "$f8" 'filter_extension: '
+check "clearing restores root files" "$f8" 'matching_files: 3'
+output=$(printf 'q\n' | "$BINARY" --headless --filter "Annual Report" --ext=.TXT "$filter_root")
+check "CLI preserves filters containing spaces and original case" "$(extract_frame "$output" 0)" 'filter_text: Annual Report'
+check "CLI reports canonical matching count" "$(extract_frame "$output" 0)" 'matching_files: 1'
+for argument in filter ext; do
+    if output=$("$BINARY" --headless "--$argument" 2>&1); then status=0; else status=$?; fi
+    check "missing filter value rejected: $argument" "$status" '^2$'
+done
+output=$(printf 'FILTER\nEXT\nq\n' | "$BINARY" --headless --lang=en "$filter_root")
+check "bare headless filter events report an error" "$output" 'Invalid filter event'
+
+echo ""
+echo "=== Scenario 22: JSON and CSV export ==="
+export_root="$TEST_DIR/export root, raíz"
+export_context="$export_root/context"
+mkdir -p "$export_context"
+printf '123456789012' > "$export_root/alpha, ñ.txt"
+printf '12345678901234567890' > "$export_root/beta.txt"
+printf '12345' > "$export_context/deep.txt"
+weird_name=$'comma,"quoted"\nline\\part.txt'
+printf 'special' > "$export_root/$weird_name"
+mkdir -p "$(dirname "$TREEFILES_CONFIG")"
+printf 'foreground=cyan\nbackground=blue\n' > "$TREEFILES_CONFIG"
+config_before=$(sha256sum "$TREEFILES_CONFIG" | cut -d' ' -f1)
+json_export=$("$BINARY" --export=json --page-size=1 --sort=name --order=asc "$export_root" 2>"$TEST_DIR/export.stderr")
+if [ -s "$TEST_DIR/export.stderr" ]; then
+    echo "  FAIL: JSON stdout is not mixed with diagnostics"
+    FAIL=$((FAIL + 1))
+else
+    echo "  PASS: JSON stdout is not mixed with diagnostics"
+    PASS=$((PASS + 1))
+fi
+if printf '%s' "$json_export" | python3 -c 'import json,sys; d=json.load(sys.stdin); assert d["schema_version"] == 1 and d["complete"]; assert len(d["entries"]) == 4; assert d["entries"][0]["path"] == "alpha, ñ.txt"; assert all(e["depth"] == 0 for e in d["entries"]); assert next(e for e in d["entries"] if e["type"] == "directory")["size_bytes"] == 5; assert any(e["path"] == "comma,\"quoted\"\nline\\part.txt" for e in d["entries"])'; then
+    echo "  PASS: JSON parser verifies schema, Unicode/control escaping, direct children, aggregate size, and no page truncation"
+    PASS=$((PASS + 1))
+else
+    echo "  FAIL: JSON report did not satisfy the schema"
+    FAIL=$((FAIL + 1))
+fi
+filtered_export=$("$BINARY" --export json --page-size 1 --filter alpha --ext=.TXT --lang=es "$export_root")
+if printf '%s' "$filtered_export" | python3 -c 'import json,sys; d=json.load(sys.stdin); assert len(d["entries"]) == 2; assert d["entries"][0]["path"] == "alpha, ñ.txt"; assert d["entries"][1]["type"] == "directory"; assert d["sort"]["key"] == "size"; assert d["filter"]["extension"] == ".TXT"'; then
+    echo "  PASS: JSON export applies shared filters and keeps directory context"
+    PASS=$((PASS + 1))
+else
+    echo "  FAIL: JSON export filter semantics are incorrect"
+    FAIL=$((FAIL + 1))
+fi
+json_english=$("$BINARY" --export json --lang en "$export_root")
+json_spanish=$("$BINARY" --export json --lang es "$export_root")
+if python3 -c 'import json,sys; a=json.loads(sys.argv[1]); b=json.loads(sys.argv[2]); assert list(a.keys()) == list(b.keys()); assert [e["type"] for e in a["entries"]] == [e["type"] for e in b["entries"]]' "$json_english" "$json_spanish"; then
+    echo "  PASS: JSON schema and canonical types are language-independent"
+    PASS=$((PASS + 1))
+else
+    echo "  FAIL: JSON schema changed with the interface language"
+    FAIL=$((FAIL + 1))
+fi
+csv_path="$TEST_DIR/export report.csv"
+"$BINARY" --export=csv --output="$csv_path" --page-size=1 --sort=name --order=asc "$export_root" 2>"$TEST_DIR/csv.stderr"
+if [ ! -s "$TEST_DIR/csv.stderr" ] && python3 -c 'import csv,sys; rows=list(csv.DictReader(open(sys.argv[1],encoding="utf-8",newline=""))); assert len(rows)==4; assert rows[0]["path"]=="alpha, ñ.txt"; assert all(r["scan_complete"]=="true" and r["depth"]=="0" for r in rows); assert next(r for r in rows if r["type"]=="directory")["size_bytes"]=="5"; assert any(r["path"]=="comma,\"quoted\"\nline\\part.txt" for r in rows)' "$csv_path"; then
+    echo "  PASS: Python CSV reader verifies quoted commas, quotes, backslashes, newlines, Unicode, and all direct children"
+    PASS=$((PASS + 1))
+else
+    echo "  FAIL: CSV report did not satisfy the schema"
+    FAIL=$((FAIL + 1))
+fi
+config_after=$(sha256sum "$TREEFILES_CONFIG" | cut -d' ' -f1)
+check "export does not alter saved settings" "$config_after" "$config_before"
+
+for expected in 'yaml' 'missing-format' 'csv-no-output' 'output-without-export' 'headless' 'save-settings'; do
+    case "$expected" in
+        yaml) args=(--export yaml "$export_root") ;;
+        missing-format) args=(--export) ;;
+        csv-no-output) args=(--export csv "$export_root") ;;
+        output-without-export) args=(--output "$csv_path" "$export_root") ;;
+        headless) args=(--export json --headless "$export_root") ;;
+        save-settings) args=(--export json --save-settings "$export_root") ;;
+    esac
+    if "$BINARY" "${args[@]}" >/dev/null 2>"$TEST_DIR/invalid-export.stderr"; then status=0; else status=$?; fi
+    check "invalid export arguments return code 2: $expected" "$status" '^2$'
+done
+
+missing_root="$TEST_DIR/missing export root"
+if output=$("$BINARY" --export json "$missing_root" 2>"$TEST_DIR/missing-root.stderr"); then status=0; else status=$?; fi
+if [ "$status" -eq 1 ] && printf '%s' "$output" | python3 -c 'import json,sys; d=json.load(sys.stdin); assert not d["complete"] and len(d["diagnostics"]) > 0'; then
+    echo "  PASS: missing root returns valid diagnostic JSON and exit code 1"
+    PASS=$((PASS + 1))
+else
+    echo "  FAIL: missing root export response is incorrect"
+    FAIL=$((FAIL + 1))
+fi
+preserved="$TEST_DIR/preserved.csv"
+printf 'previous report' > "$preserved"
+if "$BINARY" --export csv --output "$preserved" "$missing_root" >/dev/null 2>"$TEST_DIR/missing-csv.stderr"; then status=0; else status=$?; fi
+check "scan failure preserves a prior CSV file" "$status" '^1$'
+check "preserved CSV content is unchanged" "$(cat "$preserved")" '^previous report$'
+
+blocked="$TEST_DIR/blocked-output.csv"
+mkdir -p "$blocked"
+printf preserve > "$blocked/keep.txt"
+if "$BINARY" --export csv --output "$blocked" "$export_root" >/dev/null 2>"$TEST_DIR/write-error.stderr"; then status=0; else status=$?; fi
+check "output replacement failure returns code 1" "$status" '^1$'
+check "failed replacement leaves existing destination contents intact" "$(cat "$blocked/keep.txt")" '^preserve$'
+if find "$TEST_DIR" -maxdepth 1 -name '.treefiles-tmp-*' -print -quit | grep -q .; then
+    echo "  FAIL: failed export left a temporary file"
+    FAIL=$((FAIL + 1))
+else
+    echo "  PASS: failed export cleans its temporary file"
+    PASS=$((PASS + 1))
+fi
+empty_root="$TEST_DIR/empty export root"
+mkdir -p "$empty_root"
+empty_json=$("$BINARY" --export json "$empty_root")
+if printf '%s' "$empty_json" | python3 -c 'import json,sys; d=json.load(sys.stdin); assert d["complete"] and d["entries"]==[]'; then
+    echo "  PASS: empty root exports a valid empty JSON report"
+    PASS=$((PASS + 1))
+else
+    echo "  FAIL: empty root JSON report is incorrect"
+    FAIL=$((FAIL + 1))
+fi
+empty_csv="$TEST_DIR/empty.csv"
+"$BINARY" --export csv --output "$empty_csv" "$empty_root"
+if python3 -c 'import csv,sys; f=open(sys.argv[1],encoding="utf-8",newline=""); reader=csv.DictReader(f); assert reader.fieldnames==["root","path","type","size_bytes","depth","size_status","scan_complete"]; assert list(reader)==[]' "$empty_csv"; then
+    echo "  PASS: empty CSV keeps its schema header with no data rows"
+    PASS=$((PASS + 1))
+else
+    echo "  FAIL: empty CSV report is incorrect"
+    FAIL=$((FAIL + 1))
+fi
 
 echo ""
 # ============================================================

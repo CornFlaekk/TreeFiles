@@ -12,6 +12,12 @@ enum class Text {
     WarningsBinding, ScanWarnings, ScanDiagnostics, PressAnyKey, SizePartial, SizeUnavailable,
     RefreshBinding, EnterDirectoryBinding, ParentDirectoryBinding, ChangeRootBinding,
     PathPrompt, PathPromptHint, NavigationError,
+    SortKeyError, SortOrderError, InvalidSortEvent,
+    SortBinding, SortLabel, SortSize, SortName, SortMtime,
+    FilterBinding, FilterLabel, FilterNamePrompt, FilterExtensionPrompt, FilterHint,
+    FilterTextError, FilterExtensionError, InvalidFilterEvent,
+    ExportFormatError, ExportModeError, ExportDirectoryError, ExportOutputRequired,
+    ExportOptionError, ExportWriteError,
     Count
 };
 

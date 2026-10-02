@@ -377,6 +377,130 @@ try {
         }
     }
 
+    $sortChild = Join-Path $bigDirectory 'sub'
+    New-Item -ItemType Directory -Path $sortChild | Out-Null
+    Write-TestFile (Join-Path $sortChild 'child-a.txt') 1
+    Write-TestFile (Join-Path $sortChild 'child-z.txt') 1
+    $sortEvents = @('n', 'SORT name desc', 'REFRESH', ('CD ' + $sortChild), 'BACKSPACE', 'S', 'T', 'q')
+    $output = Run-Headless $sortEvents $bigDirectory @('--page-size=2')
+    Check ((Frame $output 0).Contains('sort_key: size') -and (Frame $output 0).Contains('sort_order: desc')) 'default ordering is size descending'
+    Check ((Frame $output 1).Contains('file_0002.txt')) 'page navigation reaches the second page before sorting'
+    Check ((Frame $output 2).Contains('file_0049.txt') -and (Frame $output 2).Contains('selected_index: 0') -and (Frame $output 2).Contains('scroll_offset: 0')) 'changing sort resets pagination and selects first result'
+    Check ((Frame $output 3).Contains('sort_key: name') -and (Frame $output 3).Contains('sort_order: desc')) 'refresh preserves the selected ordering'
+    Check ((Frame $output 4).Contains("current_path: $sortChild") -and (Frame $output 4).Contains('sort_key: name')) 'root navigation preserves ordering'
+    Check ((Frame $output 5).Contains("current_path: $bigDirectory") -and (Frame $output 5).Contains('sort_order: desc')) 'returning to the parent preserves ordering'
+    Check ((Frame $output 6).Contains('sort_key: mtime') -and (Frame $output 6).Contains('sort_order: desc')) 'S cycles the sort criterion'
+    Check ((Frame $output 7).Contains('sort_key: mtime') -and (Frame $output 7).Contains('sort_order: asc')) 'T toggles sort direction'
+    $output = Run-Headless @('q') $bigDirectory @('--sort=name', '--order=asc')
+    Check ((Frame $output 0).Contains('sort_key: name') -and (Frame $output 0).Contains('sort_order: asc') -and (Frame $output 0).Contains('file_0000.txt')) 'CLI equals forms select canonical sort state'
+    foreach ($arguments in @('--sort', '--sort=type', '--order', '--order=sideways')) {
+        $result = Run-Cli $arguments
+        Check ($result.Code -eq 2) "invalid sort option is rejected before curses: $arguments"
+    }
+
+    $filterRoot = Join-Path $testRoot 'filter-root'
+    $filterContext = Join-Path $filterRoot 'context'
+    New-Item -ItemType Directory -Path $filterContext -Force | Out-Null
+    Write-TestFile (Join-Path $filterRoot 'Annual Report.TXT') 8
+    Write-TestFile (Join-Path $filterRoot 'report.csv') 4
+    Write-TestFile (Join-Path $filterRoot 'other.txt') 3
+    Write-TestFile (Join-Path $filterContext 'deep-report.log') 20
+    Write-TestFile (Join-Path $filterContext 'unmatched.bin') 10
+    $filterEvents = @('e', 'FILTER annual report', 'ENTER', 'BACKSPACE', 'EXT .TXT',
+                      'REFRESH', 'FILTER missing', 'CLEAR_FILTER', 'q')
+    $output = Run-Headless $filterEvents $filterRoot
+    $filtered = Frame $output 2
+    Check ($filtered.Contains('filter_text: annual report') -and $filtered.Contains('matching_files: 1')) 'FILTER preserves spaces and uses ASCII-insensitive filename matching'
+    Check ($filtered.Contains('[DIR]  context') -and $filtered.Contains('Annual Report.TXT')) 'filter retains directory context and matching file'
+    Check ($filtered.Contains('selected_index: 0') -and $filtered.Contains('scroll_offset: 0')) 'filter resets selection and scroll position'
+    Check ((Frame $output 3).Contains("current_path: $filterContext") -and (Frame $output 3).Contains('filter_text: annual report')) 'Enter preserves active filters while changing root'
+    Check ((Frame $output 4).Contains("current_path: $filterRoot") -and (Frame $output 4).Contains('filter_text: annual report')) 'Backspace preserves active filters'
+    Check ((Frame $output 5).Contains('filter_extension: .TXT') -and (Frame $output 5).Contains('matching_files: 1')) 'EXT combines with the name filter and ignores extension case'
+    Check ((Frame $output 6).Contains('filter_extension: .TXT') -and (Frame $output 6).Contains('matching_files: 1')) 'refresh keeps filters and recounts matches'
+    $zeroMatches = Frame $output 7
+    Check ($zeroMatches.Contains('matching_files: 0') -and $zeroMatches.Contains('[DIR]  context')) 'zero matches retain directory context'
+    Check (-not $zeroMatches.Contains('--- Next') -and -not $zeroMatches.Contains('--- Previous')) 'zero matches add no phantom pagination rows'
+    $cleared = Frame $output 8
+    Check ($cleared.Contains('filter_text: ') -and $cleared.Contains('filter_extension: ') -and $cleared.Contains('matching_files: 3')) 'CLEAR_FILTER removes both filters and restores root files'
+    $output = Run-Headless @('q') $filterRoot @('--filter', 'annual report', '--ext=.TXT')
+    Check ((Frame $output 0).Contains('filter_text: annual report') -and (Frame $output 0).Contains('filter_extension: .TXT') -and (Frame $output 0).Contains('matching_files: 1')) 'CLI filters accept separated name and equals extension forms'
+    foreach ($arguments in @('--headless --filter', '--headless --ext')) {
+        $result = Run-Cli $arguments
+        Check ($result.Code -eq 2 -and $result.Error.Contains('requires a value')) "missing filter option value is rejected: $arguments"
+    }
+    $output = Run-Headless @('FILTER', 'EXT', 'q') $filterRoot @('--lang=en')
+    Check ($output.Contains('Invalid filter event')) 'headless filter commands require a value'
+
+    $exportRoot = Join-Path $testRoot 'export raíz, root'
+    $exportContext = Join-Path $exportRoot 'context'
+    New-Item -ItemType Directory -Path $exportContext -Force | Out-Null
+    Write-TestFile (Join-Path $exportRoot 'alpha, ñ.txt') 12
+    Write-TestFile (Join-Path $exportRoot 'beta.txt') 20
+    Write-TestFile (Join-Path $exportContext 'deep.txt') 5
+    $configBeforeExport = [Convert]::ToBase64String([IO.File]::ReadAllBytes($env:TREEFILES_CONFIG))
+
+    $result = Run-Cli "--export=json --page-size=1 --sort=name --order=asc `"$exportRoot`""
+    Check ($result.Code -eq 0 -and $result.Error.Length -eq 0) 'JSON export writes only the report to stdout'
+    $jsonExport = $result.Output | ConvertFrom-Json
+    Check ($jsonExport.schema_version -eq 1 -and $jsonExport.complete) 'JSON export has the stable complete v1 envelope'
+    Check ($jsonExport.entries.Count -eq 3) 'JSON export ignores page size and includes every direct child'
+    Check ($jsonExport.entries[0].path -eq 'alpha, ñ.txt' -and $jsonExport.entries[0].type -eq 'file') 'JSON export keeps Unicode paths and applies name sorting'
+    Check (@($jsonExport.entries | Where-Object { $_.depth -ne 0 }).Count -eq 0) 'JSON export does not enumerate directory children'
+    $exportDirectory = $jsonExport.entries | Where-Object { $_.type -eq 'directory' }
+    Check ($exportDirectory.size_bytes -eq 5 -and $exportDirectory.size_status -eq 'complete') 'JSON export reports aggregate directory size in bytes'
+
+    $filteredJsonResult = Run-Cli "--export json --page-size 1 --filter alpha --ext=.TXT --lang=es `"$exportRoot`""
+    $filteredJson = $filteredJsonResult.Output | ConvertFrom-Json
+    Check ($filteredJsonResult.Code -eq 0 -and $filteredJson.entries.Count -eq 2) 'JSON export shares filename and extension filter semantics'
+    Check ($filteredJson.entries[0].path -eq 'alpha, ñ.txt' -and $filteredJson.entries[1].type -eq 'directory') 'filtered export retains directory context'
+    Check (($filteredJson.PSObject.Properties.Name -join ',') -eq ($jsonExport.PSObject.Properties.Name -join ',') -and $filteredJson.entries[0].type -eq $jsonExport.entries[0].type) 'Spanish does not translate the JSON schema or entry types'
+
+    $csvPath = Join-Path $testRoot 'export report.csv'
+    $csvResult = Run-Cli "--export=csv --output=`"$csvPath`" --page-size=1 --sort=name --order=asc `"$exportRoot`""
+    $csvRows = @(Import-Csv -LiteralPath $csvPath -Encoding UTF8)
+    Check ($csvResult.Code -eq 0 -and $csvResult.Output.Length -eq 0 -and $csvRows.Count -eq 3) 'CSV export uses the file and parser without page truncation'
+    Check ($csvRows[0].path -eq 'alpha, ñ.txt' -and $csvRows[0].scan_complete -eq 'true') 'CSV quotes comma and Unicode fields correctly'
+    Check (-not (Test-Path -LiteralPath (Join-Path $testRoot 'config con espacios ñ/config.ini')) -or
+        $configBeforeExport -eq [Convert]::ToBase64String([IO.File]::ReadAllBytes($env:TREEFILES_CONFIG))) 'export does not modify saved settings'
+
+    foreach ($arguments in @(
+        "--export yaml `"$exportRoot`"",
+        '--export json',
+        "--export csv `"$exportRoot`"",
+        "--output `"$csvPath`" `"$exportRoot`"",
+        "--export json --headless `"$exportRoot`"",
+        "--export json --save-settings `"$exportRoot`""
+    )) {
+        $invalidExport = Run-Cli $arguments
+        Check ($invalidExport.Code -eq 2) "invalid export arguments are rejected: $arguments"
+    }
+
+    $missingRoot = Join-Path $testRoot 'missing export root'
+    $missingJson = Run-Cli "--export json `"$missingRoot`""
+    $failureReport = $missingJson.Output | ConvertFrom-Json
+    Check ($missingJson.Code -eq 1 -and -not $failureReport.complete -and $failureReport.diagnostics.Count -gt 0) 'root failure returns a diagnostic JSON report and code 1'
+    $preservedCsv = Join-Path $testRoot 'preserved.csv'
+    [IO.File]::WriteAllText($preservedCsv, 'previous report')
+    $failedCsv = Run-Cli "--export csv --output `"$preservedCsv`" `"$missingRoot`""
+    Check ($failedCsv.Code -eq 1 -and [IO.File]::ReadAllText($preservedCsv) -eq 'previous report') 'scan failure preserves the previous output file'
+
+    $blockedOutput = Join-Path $testRoot 'blocked-output.csv'
+    New-Item -ItemType Directory -Path $blockedOutput | Out-Null
+    [IO.File]::WriteAllText((Join-Path $blockedOutput 'keep.txt'), 'preserve')
+    $failedWrite = Run-Cli "--export csv --output `"$blockedOutput`" `"$exportRoot`""
+    Check ($failedWrite.Code -eq 1 -and [IO.File]::ReadAllText((Join-Path $blockedOutput 'keep.txt')) -eq 'preserve') 'replacement failure leaves destination and its contents intact'
+    Check (@(Get-ChildItem -LiteralPath $testRoot -Force | Where-Object { $_.Name -like '.treefiles-tmp-*' }).Count -eq 0) 'failed output replacement cleans its temporary file'
+    $emptyRoot = Join-Path $testRoot 'empty export root'
+    New-Item -ItemType Directory -Path $emptyRoot | Out-Null
+    $emptyJsonResult = Run-Cli "--export json `"$emptyRoot`""
+    $emptyJson = $emptyJsonResult.Output | ConvertFrom-Json
+    Check ($emptyJsonResult.Code -eq 0 -and $emptyJson.entries.Count -eq 0) 'empty roots produce valid empty JSON reports'
+    $emptyCsvPath = Join-Path $testRoot 'empty.csv'
+    $emptyCsvResult = Run-Cli "--export csv --output `"$emptyCsvPath`" `"$emptyRoot`""
+    $emptyCsvRows = @(Import-Csv -LiteralPath $emptyCsvPath -Encoding UTF8)
+    Check ($emptyCsvResult.Code -eq 0 -and $emptyCsvRows.Count -eq 0 -and
+        (Get-Content -LiteralPath $emptyCsvPath -TotalCount 1) -eq 'root,path,type,size_bytes,depth,size_status,scan_complete') 'empty CSV contains its header and no data rows'
+
     # Preferences survive process restarts, while ordinary CLI overrides remain session-only.
     $output = Run-Headless @('q') $bigDirectory @('--lang=es', '--page-size=7', '--save-settings')
     Check ((Frame $output 0).Contains('language: es') -and (Frame $output 0).Contains('page_size: 7')) 'save-settings persists language and page size'

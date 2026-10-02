@@ -18,7 +18,8 @@ TreeFiles/
 ├── README.md
 ├── .gitignore
 ├── include/
-│   ├── file_utils.h           # EntryInfo struct, file system functions
+│   ├── file_utils.h           # EntryInfo, sorting and file system functions
+│   ├── export_utils.h         # JSON/CSV report schema, serializers and atomic output
 │   ├── ui_utils.h             # TUI rendering functions
 │   ├── localization.h         # English/Spanish string catalog
 │   ├── settings.h             # Saved colors and app preferences
@@ -27,6 +28,7 @@ TreeFiles/
 ├── src/
 │   ├── main.cpp               # Entry point: main loop, keyboard handling
 │   ├── file_utils.cpp         # Directory traversal, size calc, tree building
+│   ├── export_utils.cpp        # Export serialization and output replacement
 │   └── ui_utils.cpp           # TUI rendering: borders, bars, popups
 ├── tests/
 │   ├── test_human_readable_size.cpp
@@ -34,7 +36,8 @@ TreeFiles/
 │   ├── test_pagination.cpp
 │   ├── test_settings.cpp
 │   ├── test_localization.cpp
-│   └── test_scan.cpp
+│   ├── test_scan.cpp
+│   └── test_export_utils.cpp
 ├── scripts/
 │   ├── run_interactive.sh     # tmux-based interactive testing
 │   ├── test_scenarios.sh      # Headless integration test scenarios
@@ -112,6 +115,12 @@ Each line is one event:
 | `CD <path>` | Change directory | `path` is the complete literal UTF-8 remainder, relative to `current_path` unless absolute |
 | `o` / `O` | Open path dialog | Interactive only; accepts relative or absolute paths and Escape cancels |
 | `r` / `R` / `REFRESH` | Refresh | Clear cached sizes and rescan the current root |
+| `SORT <key> <order>` | Sort | Set canonical sorting options, for example `SORT mtime asc` |
+| `S` / `T` | Sort shortcut | Cycle the key / toggle the order |
+| `FILTER <text>` | Filename filter | Set the query to the complete literal remainder; combines with the extension filter |
+| `EXT <extension>` | Extension filter | Set the final extension, with or without a leading dot |
+| `CLEAR_FILTER` | Clear filters | Clear both filter fields |
+| `/` / `F` | Filter shortcut | Open the two-field filter dialog / clear both filters |
 | `COLOR red blue` | Color setting | Save foreground/background using canonical English names |
 | `w` / `W` | Warnings | Show scan diagnostics (interactive); headless prints a diagnostic popup record |
 
@@ -136,6 +145,8 @@ message: Delete "foo.txt"?
 Each frame contains:
 - `current_path`, `selected_index`, `scroll_offset`, `visible_rows`
 - `page_size` (default 30; configured with `--page-size N` in either mode)
+- `sort_key` (`size`, `name`, `mtime`) and `sort_order` (`asc`, `desc`)
+- `filter_text`, `filter_extension`, and `matching_files` (active filters are ANDed; name and extension comparisons fold ASCII case only)
 - `language` (default en; selected with `--lang en|es`)
 - `expanded_dirs` set
 - `last_scan_ms`, `bar_fg`, `bar_bg`
@@ -213,6 +224,9 @@ struct EntryInfo {
 - **Types:** Prefer `std::filesystem::path` for paths, `std::uintmax_t` for file sizes.
 - **Error handling:** Try/catch for filesystem operations, return 0/bool for failures.
 - **Scanning:** Use `ScanResult`/`ScanIssue`; never turn a filesystem error into a successful zero-byte size. Do not traverse symlinks or Windows directory junctions.
+- **Sorting:** Sort real siblings before pagination. Keep name/path tie-breaks bytewise and deterministic; missing modification times stay last for either direction.
+- **Filtering:** Apply filename substring and final-extension filters to files and links before pagination at every displayed directory level. Keep directories visible as context, do not auto-expand them, and leave measured size totals independent of filters. Fold ASCII case only; compare non-ASCII UTF-8 bytes exactly.
+- **Export:** Keep JSON keys, CSV columns, canonical entry types and size status values language-independent. Export all direct children without pagination; directories carry aggregate sizes but are not expanded. Escape UTF-8/control characters correctly and replace output atomically only after serialization succeeds.
 - **Thread safety:** `std::mutex` guards the directory size cache. `std::atomic<bool>` for loading flags.
 - **Dependencies:** C++17 standard library + the platform's curses backend. Keep platform-specific APIs in `platform_utils.cpp`.
 - **Localization:** All UI strings go through `localization.h`. English is the default; Spanish is selected with `--lang es`. Keep headless protocol keys and persisted color names stable.
@@ -224,6 +238,7 @@ struct EntryInfo {
 ## Testing Guidelines
 
 - Unit tests go in `tests/test_<component>.cpp`. Each is a standalone executable returning 0 on success, non-zero on failure.
+- Export tests use real JSON/CSV parsers in platform integration tests, with serializer unit tests for control characters, Unicode, exact large integers, partial results and failed atomic replacement.
 - Use standard `assert()` for simple checks, or custom `check()` macros for descriptive output.
 - Integration scenarios in `scripts/test_scenarios.sh` (Linux) and `scripts/test_scenarios.ps1` (Windows) use headless mode with piped events. CTest runs the appropriate suite. `TREEFILES_BINARY` lets the Bash suite use an already-built binary.
 - Visual verification via `scripts/run_interactive.sh` and `screenshots/`.
