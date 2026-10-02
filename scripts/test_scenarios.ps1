@@ -428,7 +428,7 @@ try {
         $result = Run-Cli $arguments
         Check ($result.Code -eq 2 -and $result.Error.Contains('requires a value')) "missing filter option value is rejected: $arguments"
     }
-    $output = Run-Headless @('FILTER', 'EXT', 'q') $filterRoot
+    $output = Run-Headless @('FILTER', 'EXT', 'q') $filterRoot @('--lang=en')
     Check ($output.Contains('Invalid filter event')) 'headless filter commands require a value'
 
     # Preferences survive process restarts, while ordinary CLI overrides remain session-only.
