@@ -584,6 +584,8 @@ printf '12345678901234567890' > "$export_root/beta.txt"
 printf '12345' > "$export_context/deep.txt"
 weird_name=$'comma,"quoted"\nline\\part.txt'
 printf 'special' > "$export_root/$weird_name"
+mkdir -p "$(dirname "$TREEFILES_CONFIG")"
+printf 'foreground=cyan\nbackground=blue\n' > "$TREEFILES_CONFIG"
 config_before=$(sha256sum "$TREEFILES_CONFIG" | cut -d' ' -f1)
 json_export=$("$BINARY" --export=json --page-size=1 --sort=name --order=asc "$export_root" 2>"$TEST_DIR/export.stderr")
 if [ -s "$TEST_DIR/export.stderr" ]; then
