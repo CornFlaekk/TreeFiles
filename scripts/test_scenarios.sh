@@ -626,7 +626,7 @@ for argument in filter ext; do
     if output=$("$BINARY" --headless "--$argument" 2>&1); then status=0; else status=$?; fi
     check "missing filter value rejected: $argument" "$status" '^2$'
 done
-output=$(printf 'FILTER\nEXT\nq\n' | "$BINARY" --headless "$filter_root")
+output=$(printf 'FILTER\nEXT\nq\n' | "$BINARY" --headless --lang=en "$filter_root")
 check "bare headless filter events report an error" "$output" 'Invalid filter event'
 
 echo ""
